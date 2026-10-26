@@ -1,0 +1,10 @@
+scripts/ingest_scripts
+scripts/ingest_scripts/*.json
+scripts/ingest_scripts/*.txt
+scripts/ingest_scripts/*.api
+scripts/*.py
+scripts/sql_scripts/
+*_analysis/
+assets/
+logs/
+sim_results/ 
