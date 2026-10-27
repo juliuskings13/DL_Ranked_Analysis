@@ -1,10 +1,44 @@
-scripts/ingest_scripts
-scripts/ingest_scripts/*.json
-scripts/ingest_scripts/*.txt
-scripts/ingest_scripts/*.api
-scripts/*.py
-scripts/sql_scripts/
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- data (large, and not ours to redistribute) ---*_analysis/
 *_analysis/
+*.parquet
+*.csv
+!sample_data/*.csv
+
+# --- game art (Valve's assets; re-download with scripts/ingest_hero_icons.py) ---
 assets/
-logs/
-sim_results/ 
+
+# --- API dumps (regenerate with db_table_schema_inspect.py / ingest_hero_icons.py) ---
+**/schema_results.json
+**/icons_schema_results.json
+
+# --- media / renders ---
+*.mp4
+*.mkv
+*.mov
+renders/
+
+# --- editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Separate Project ---
+**/Ranked_Monte_Carlo
+**/hero_analysis_ideas
