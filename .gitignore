@@ -15,6 +15,7 @@ env/
 *.egg-info/
 
 # --- data (large, and not ours to redistribute) ---*_analysis/
+logs/
 *_analysis/
 *.parquet
 *.csv
@@ -41,4 +42,5 @@ Thumbs.db
 
 # --- Separate Project ---
 **/Ranked_Monte_Carlo
+sim_results/
 **/hero_analysis_ideas

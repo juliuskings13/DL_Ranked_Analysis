@@ -1,159 +1,150 @@
-import sys
-from datetime import date
-from pathlib import Path
-import matplotlib.pyplot as plt
+"""
+balance_wr_distribution.py — "How balanced is Deadlock?" card (1080x1080).
+
+Every hero is an icon at its exact win rate (stacked only where icons would overlap). The gold band is
+where *sampling noise alone* would put heroes if every hero were truly 50%: with ~15–57k
+games per hero, a perfectly balanced hero still wobbles by a few tenths of a point.
+Heroes outside the band are imbalanced for real, not by chance.
+
+Usage: python3 balance_wr_distribution.py [week_dir] [--highlight "Victor,Mirage"]
+"""
+from __future__ import annotations
+
+import argparse
+
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
-# --- CONFIGURATION & PATH RESOLUTION ---
-RANKED_START_DATE = date(2026, 7, 30)
+import theme as T
+from chart_stats import add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
 
-
-def get_current_week_number() -> int:
-    days_elapsed = (date.today() - RANKED_START_DATE).days
-    return days_elapsed // 7
-
-
-def resolve_target_dir() -> Path:
-    if len(sys.argv) > 1:
-        target = Path(sys.argv[1])
-        if target.is_dir():
-            return target
-
-    week_num = get_current_week_number()
-    return Path.home() / "Projects" / "DL_ranked_analysis" / f"week{week_num}_analysis"
+Z_BAND = 2.58            # 99% of noise-only outcomes fall inside the band
+ICON_PX = 50
+DIM_ALPHA = 0.2
+# Tier zones: (lo, hi, name, tint color, tint strength × ZONE_TINT_ALPHA, label color).
+# Red deepens the further below 50% a tier is, green deepens above, gold marks balanced.
+TIERS = [(-np.inf, 46, "TRASH",    T.RED,   1.6, T.RED),
+         (46, 48,      "WEAK",     T.RED,   0.95, T.RED),
+         (48, 49,      "UNDER",    T.RED,   0.45, "#f4a3a3"),
+         (49, 51,      "BALANCED", T.GOLD,  1.0, T.GOLD),
+         (51, 52,      "OVER",     T.GREEN, 0.45, "#9be8bb"),
+         (52, 54,      "STRONG",   T.GREEN, 0.95, T.GREEN),
+         (54, np.inf,  "GOD TIER", T.GREEN, 1.6, T.GREEN)]
 
 
-DATA_DIR = resolve_target_dir()
-OUTPUT_DIR = DATA_DIR / "graphs"
-CSV_FILE_PATH = DATA_DIR / "hero_winrates.csv"
+def prepare(data_dir) -> tuple[pd.DataFrame, dict]:
+    df = add_winrate_ci(load_hero_meta(data_dir))
+    se = np.sqrt(0.25 / df["total_matches"]) * 100          # SE of a true-50% hero, in points
+    half = float(Z_BAND * se.max())                           # widest (smallest-sample) hero
+    band = {"lo": 50 - half, "hi": 50 + half}
+    df["in_band"] = df["winrate"].between(band["lo"], band["hi"])
+    df = df.sort_values("winrate").reset_index(drop=True)
+    df["stack"] = _beeswarm_levels(df["winrate"].to_numpy(), MIN_GAP_PTS)
+    return df, band
 
 
-def load_and_transform_data(csv_path: Path) -> tuple[pd.DataFrame, int]:
-    """Reads hero_winrates.csv and dynamically aggregates hero counts by bracket & archetype."""
-    if not csv_path.exists():
-        print(f"Error: CSV file not found at {csv_path}")
-        sys.exit(1)
-
-    df_raw = pd.read_csv(csv_path)
-    df_raw.columns = df_raw.columns.str.strip().str.lower()
-
-    # Standardize archetype names (e.g., 'brawler' -> 'Brawler')
-    df_raw["hero_type"] = df_raw["hero_type"].str.strip().str.capitalize()
-
-    # Define bracket boundaries (-inf to 46%, 46-48%, 48-49%, 49-51%, 51-52%, 52-54%, 54%+ inf)
-    bins = [-float("inf"), 46.0, 48.0, 49.0, 51.0, 52.0, 54.0, float("inf")]
-    bracket_labels = [
-        "Trash\n(<46%)",
-        "Weak\n(46-48%)",
-        "Underperforming\n(48-49%)",
-        "Balanced\n(49-51%)",
-        "Overperforming\n(51-52%)",
-        "Strong\n(52-54%)",
-        "God Tier\n(>54%)",
-    ]
-
-    # Assign each hero to a win rate bracket
-    df_raw["bracket"] = pd.cut(
-        df_raw["winrate"], bins=bins, labels=bracket_labels, right=False
-    )
-
-    # Cross-tabulate archetype counts across brackets
-    ct = pd.crosstab(df_raw["bracket"], df_raw["hero_type"])
-
-    # Ensure all 4 archetypes exist in expected order
-    archetype_order = ["Assassin", "Brawler", "Marksman", "Mystic"]
-    for arch in archetype_order:
-        if arch not in ct.columns:
-            ct[arch] = 0
-
-    ct = ct[archetype_order].reindex(bracket_labels, fill_value=0)
-    total_heroes = len(df_raw)
-
-    return ct, total_heroes
+MIN_GAP_PTS = 0.68       # icons closer than this (in win-rate points) stack vertically
 
 
-def main():
-    # 1. Load and dynamically transform CSV data
-    df, total_heroes = load_and_transform_data(CSV_FILE_PATH)
-    brackets = df.index.tolist()
+def _beeswarm_levels(xs: np.ndarray, gap: float) -> list[int]:
+    """Each hero sits at its exact win rate; stack upward only when it would overlap."""
+    placed: list[tuple[float, int]] = []
+    levels = []
+    for x in xs:
+        lvl = 0
+        while any(abs(x - px) < gap and pl == lvl for px, pl in placed):
+            lvl += 1
+        placed.append((x, lvl))
+        levels.append(lvl)
+    return levels
 
-    # 2. Set up dark themed styling
-    plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(12, 7))
 
-    # 3. Plot empirical data as stacked columns
-    # Matching hex colors to your existing archetype palette
-    colors = ["#06b6d4", "#22c55e", "#f97316", "#D61FFF"]  # Assassin, Brawler, Marksman, Mystic
-    df.plot(kind="bar", stacked=True, ax=ax, color=colors, width=0.35, alpha=0.85, zorder=3)
+def render(df: pd.DataFrame, band: dict, meta: T.ChartMeta, progress: float = 1.0,
+           highlight: set[str] | None = None) -> "T.Figure":
+    highlight = {h.lower() for h in highlight} if highlight else None
+    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
+    p_band = T.ease_out_cubic(T.phase(progress, 0.75, 0.95))
+    n_in, n = int(df["in_band"].sum()), len(df)
+    title = f"ONLY {n_in} OF {n} HEROES ARE BALANCED"
+    sub = (f"Perfect balance would put every hero between {band['lo']:.1f}% and {band['hi']:.1f}%"
+           if n_in < n else "Every hero sits inside the noise band")
 
-    # Empirical trend line (sums height of each stack)
-    stacked_totals = df.sum(axis=1).values
-    x_indices = np.arange(len(brackets))
+    fig, ax = T.new_card()
+    T.draw_header(fig, title, sub, alpha=p_frame)
+    T.draw_archetype_legend(fig, alpha=p_frame)
+    T.draw_footer(fig, meta, alpha=p_frame)
 
-    ax.plot(
-        x_indices,
-        stacked_totals,
-        color="#00f5d4",  # Neon cyan trend line
-        linestyle="-",
-        linewidth=2.0,
-        marker="o",
-        markersize=6,
-        label="Actual Hero Distribution",
-        zorder=4,
-    )
+    x_lo, x_hi = np.floor(df["winrate"].min() - 0.5), np.ceil(df["winrate"].max() + 0.5)
+    max_stack = int(df["stack"].max()) + 1
+    ax.set_xlim(x_lo, x_hi)
+    ax.set_ylim(-0.1, max_stack + 1.7)                        # just enough room for tier labels on top
+    ax.set_yticks([])
+    ax.spines["left"].set_visible(False)
+    ax.grid(False)
+    ticks = np.arange(np.ceil(x_lo), np.floor(x_hi) + 1, 1)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f"{t:.0f}%" for t in ticks])
+    ax.set_xlabel("Win rate", labelpad=12)
+    for tl in ax.get_xticklabels():
+        tl.set_alpha(p_frame)
 
-    # 4. Generate smooth theoretical bell curve dynamically centered on Balanced (index 3)
-    x_smooth = np.linspace(0, len(brackets) - 1, 300)
-    bell_y_smooth = norm.pdf(x_smooth, loc=3, scale=1.3)
+    # Tier zones: tinted full-height columns with solid dividers and colored names on top
+    y0, top = ax.get_ylim()
+    for lo, hi, name, tint, strength, label_col in TIERS:
+        a, b = max(lo, x_lo), min(hi, x_hi)
+        if a >= b:
+            continue
+        ax.axvspan(a, b, color=tint, alpha=T.ZONE_TINT_ALPHA * strength * p_frame, lw=0, zorder=0.3)
+        if a > x_lo:
+            ax.plot([a, a], [y0, top], color=T.TEXT_MUTED, lw=1.2, alpha=0.45 * p_frame, zorder=0.4)
+        ax.text((a + b) / 2, top - 0.55, name, ha="center", va="center", color=label_col,
+                fontsize=T.px_to_pt(18), fontweight="bold", alpha=p_frame, path_effects=T.STROKE)
 
-    # Normalize bell curve peak height based on total hero count relative to 38
-    peak_target = (total_heroes / 38.0) * 8.5
-    bell_y_smooth = (bell_y_smooth / max(bell_y_smooth)) * peak_target
+    # Noise-only band: outlined + hatched (not filled) so it doesn't double the BALANCED tint
+    from matplotlib.patches import Rectangle
+    band_top = top - 1.1
+    ax.add_patch(Rectangle((band["lo"], y0), band["hi"] - band["lo"], band_top - y0, facecolor="none",
+                           edgecolor=T.GOLD, hatch="/", lw=1.8, ls=(0, (6, 4)), alpha=0.75 * p_band,
+                           zorder=1))
+    ax.axvline(50, color=T.GOLD, lw=1.8, alpha=0.8 * p_frame, zorder=1)
+    ax.text(50, band_top - 0.12, "noise-only\nrange", ha="center", va="top", color=T.GOLD,
+            fontsize=T.px_to_pt(16), fontweight="bold", alpha=p_band, linespacing=1.1, zorder=7,
+            path_effects=T.STROKE)
 
-    ax.plot(
-        x_smooth,
-        bell_y_smooth,
-        color="#ffffff",
-        linestyle="--",
-        linewidth=2.5,
-        label="Theoretical Perfect Balance",
-        zorder=5,
-    )
+    # Hero icons drop in, left to right
+    for i, r in df.iterrows():
+        s = 0.12 + 0.55 * (r["winrate"] - df["winrate"].min()) / max(df["winrate"].max() - df["winrate"].min(), 1)
+        t = T.ease_out_cubic(T.phase(progress, s, s + 0.25))
+        if t <= 0:
+            continue
+        hl = highlight is None or r["hero_name"].lower() in highlight
+        a = t * (1.0 if hl else DIM_ALPHA)
+        y_final = r["stack"] + 0.5
+        y = y_final + (1 - t) * 3
+        ring = T.archetype_color(r["hero_type"])
+        T.add_icon(ax, T.icon_any(r["hero_name"], ICON_PX, ring, a, wr=r["winrate"]),
+                   (r["winrate"], y), zorder=6 if hl else 4)
+        if highlight and hl and t >= 1:
+            ax.text(r["winrate"], y + 0.62, r["hero_name"], ha="center", va="bottom",
+                    color=T.TEXT, fontsize=T.px_to_pt(17), fontweight="bold", zorder=7,
+                    path_effects=T.STROKE)
+    return fig
 
-    # 5. Styling & aesthetics
-    ax.set_title(
-        "Deadlock hero_type Balance vs. Theoretical Bell Curve",
-        fontsize=16,
-        pad=20,
-        fontweight="bold",
-    )
-    ax.set_xlabel("Winrate Brackets", fontsize=12, labelpad=10)
-    ax.set_ylabel("Number of Heroes", fontsize=12, labelpad=10)
 
-    plt.xticks(rotation=0, fontsize=10)
-    plt.yticks(fontsize=10)
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("week_dir", nargs="?", default=None)
+    ap.add_argument("--highlight", default="")
+    ap.add_argument("--progress", type=float, default=1.0)
+    args = ap.parse_args()
 
-    ax.grid(axis="y", linestyle=":", alpha=0.3, zorder=0)
-    ax.set_axisbelow(True)
-
-    ax.legend(
-        title="hero_types & Models",
-        title_fontsize="11",
-        fontsize="10",
-        frameon=True,
-        facecolor="#222222",
-        edgecolor="none",
-    )
-
-    plt.tight_layout()
-
-    # Save chart to designated graph output directory
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / "deadlock_balance_chart.png"
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"Graph successfully saved to: {output_path}")
+    data_dir = T.resolve_target_dir(args.week_dir)
+    df, band = prepare(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(df["total_matches"]))
+    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
+    out = data_dir / "graphs" / "deadlock_balance_chart.png"
+    T.save_card(render(df, band, meta, progress=args.progress, highlight=hl), out)
+    print(f"Saved {out}  | band {band['lo']:.2f}–{band['hi']:.2f}%, {int(df['in_band'].sum())} heroes inside")
 
 
 if __name__ == "__main__":

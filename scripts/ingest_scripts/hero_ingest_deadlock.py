@@ -8,7 +8,7 @@ from db_config import DB_URI
 
 
 #Database config
-base_api_url = "https://assets.deadlock-api.com/v2"
+base_api_url = "https://api.deadlock-api.com/v1/assets"
 
 # Schema setup
 

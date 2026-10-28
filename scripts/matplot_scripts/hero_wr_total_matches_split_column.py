@@ -1,297 +1,145 @@
-import sys
-import re
-from datetime import date
-from pathlib import Path
+"""
+hero_wr_total_matches_split_column.py — hero win-rate cards (1080x1080).
+
+Bars diverge from 50%, so "how far from balanced" is the bar length; 95% CI whiskers;
+pick rate printed per row. Icons, fonts and columns are sized to the space available.
+Outputs:
+    hero_winrates_top_bottom.png          10 best + 10 worst heroes
+    hero_winrates_<archetype>.png         one card per archetype (≤12 heroes each)
+
+Usage: python3 hero_wr_total_matches_split_column.py [week_dir] [--highlight "Victor,Mirage"]
+"""
+from __future__ import annotations
+
+import argparse
+
+import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
+from matplotlib.patches import Rectangle
 
-# --- CONFIGURATION & PATH RESOLUTION ---
-RANKED_START_DATE = date(2026, 7, 30)
+import theme as T
+from chart_stats import add_pick_rate, add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
 
-
-def get_current_week_number() -> int:
-    """Calculates the target week number (0-indexed offset for completed week)."""
-    days_elapsed = (date.today() - RANKED_START_DATE).days
-    return days_elapsed // 7
+TOP_N = 10
+BAR_H = 0.62            # fraction of a row
+DIM_ALPHA = 0.25
 
 
-def resolve_target_dir() -> Path:
-    """Gets target dir from CLI args or defaults to current week's analysis folder."""
-    if len(sys.argv) > 1:
-        target = Path(sys.argv[1])
-        if target.is_dir():
-            return target
-
-    week_num = get_current_week_number()
-    return Path.home() / "Projects" / "DL_ranked_analysis" / f"week{week_num}_analysis"
+def prepare(data_dir) -> pd.DataFrame:
+    df = load_hero_meta(data_dir)
+    df = add_winrate_ci(add_pick_rate(df))
+    return df.sort_values("winrate", ascending=False).reset_index(drop=True)
 
 
-DATA_DIR = resolve_target_dir()
-OUTPUT_DIR = DATA_DIR / "graphs"
-CSV_FILE_PATH = DATA_DIR / "hero_winrates.csv"
+def render(rows: pd.DataFrame, meta: T.ChartMeta, title: str, subtitle: str,
+           gap_after: int | None = None, span: float | None = None,
+           progress: float = 1.0, highlight: set[str] | None = None) -> "T.Figure":
+    """rows: already ordered top→bottom. gap_after: insert a separator after this row index.
+    span: ±percentage points shown around 50% (shared across cards keeps them comparable)."""
+    highlight = {h.lower() for h in highlight} if highlight else None
+    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
+    fig, ax = T.new_table_card()
+    T.draw_header(fig, title, subtitle, alpha=p_frame)
+    T.draw_footer(fig, meta, alpha=p_frame)
 
-# --- COLOR PALETTE & TYPE CONFIGURATION ---
-TYPE_COLORS = {
-    "brawler": (34, 197, 94, 255),    # #22c55e
-    "marksman": (249, 115, 22, 255),  # #f97316
-    "assassin": (6, 182, 212, 255),   # #06b6d4
-    "mystic": (214, 31, 255, 255),    # #d61fff
-}
+    n = len(rows) + (1 if gap_after is not None else 0)
+    row = T.table_rows(fig, ax, n, header_rows=1.0, footer_rows=0.8)
+    W, _ = T.content_px(fig)
+    span = span or float(np.ceil(max((rows["wr_hi"] - 50).abs().max(), (rows["wr_lo"] - 50).abs().max()) + 0.5))
 
-DIM_ALPHA = 0.22  # Translucent background track fill for bars
+    icon_px = min(row * 0.84, 70)
+    font = T.fit_font_px(rows["hero_name"], 250, row * 0.50, max_px=28, min_px=13)
+    name_w = max(T.text_px(h, font) for h in rows["hero_name"])
+    val_font = min(font * 0.95, 26)
+    pick_w = max(T.text_px("PICK", 17), T.text_px("100%", val_font, bold=False))
+    cols = T.layout_columns({"icon": icon_px, "name": name_w, "bars": None, "pick": pick_w}, W)
+    # leave room inside the bar column for the % label beyond each whisker
+    label_w = T.text_px("55.5%", val_font) + 12
+    b0, b1 = cols["bars"][0] + label_w / W, cols["bars"][1] - label_w / W
 
-BG_COLOR = (15, 23, 23, 255)
-TEXT_COLOR = (244, 240, 226, 255)
-TITLE_COLOR = (255, 208, 115, 255)
-TRACK_BG = (42, 42, 42, 255)
-SUBTITLE_COLOR = (180, 185, 195, 255)
-SECTION_HEADER_COLOR = (220, 220, 225, 255)
-HEADER_TEXT_COLOR = (160, 165, 175, 255)
-FOOTER_COLOR = (120, 125, 135, 255)
+    def to_x(wr):                           # win rate → table x
+        return b0 + (np.asarray(wr) - (50 - span)) / (2 * span) * (b1 - b0)
 
-# Image & Panel Dimensions
-WIDTH = 1000
-ROW_HEIGHT = 44
-HEADER_HEIGHT = 110
-PADDING = 5
-FOOTER_HEIGHT = 30
+    hdr = dict(color=T.GOLD, fontsize=T.px_to_pt(17), fontweight="bold", va="center", alpha=p_frame)
+    ax.text(cols["name"][0], -1.0, "HERO", ha="left", **hdr)
+    ax.text(to_x(50), -1.0, "WIN RATE", ha="center", **hdr)
+    ax.text(1.0, -1.0, "PICK", ha="right", **hdr)
+    tick_font = min(16, val_font * 0.75)
+    for v in np.arange(50 - span, 50 + span + 0.01, 2 if span >= 4 else 1):
+        ax.plot([to_x(v)] * 2, [-0.5, n - 0.5], color=T.GRID, lw=1, zorder=0, alpha=p_frame)
+        ax.text(to_x(v), n - 0.4, f"{v:.0f}%", ha="center", va="top", color=T.TEXT_MUTED,
+                fontsize=T.px_to_pt(tick_font), alpha=p_frame)
+    ax.plot([to_x(50)] * 2, [-0.5, n - 0.5], color=T.TEXT_MUTED, lw=1.8, zorder=1, alpha=p_frame)
 
-# Column Layout Boundaries
-COL_HERO_NAME = (20, 140)
-COL_MATCHES_BAR = (140, 550)
-COL_WINRATE_BAR = (570, 980)
+    y = 0
+    for i, (_, r) in enumerate(rows.iterrows()):
+        if gap_after is not None and i == gap_after + 1:
+            ax.plot([0, 1], [y, y], color=T.DIVIDER, lw=1.5, ls=(0, (6, 4)), alpha=p_frame)
+            y += 1
+        s = 0.15 + 0.5 * i / max(len(rows) - 1, 1)
+        t = T.ease_out_cubic(T.phase(progress, s, s + 0.3))
+        hl = highlight is None or r["hero_name"].lower() in highlight
+        a = (1.0 if hl else DIM_ALPHA) * t
+        col = T.archetype_color(r["hero_type"])
 
+        if i % 2 == 0:
+            ax.add_patch(Rectangle((0, y - 0.5), 1, 1, color=T.PANEL, alpha=0.55 * p_frame, zorder=0, lw=0))
+        if t > 0:
+            T.add_icon(ax, T.icon_any(r["hero_name"], icon_px, col, a, wr=r["winrate"]),
+                       ((cols["icon"][0] + cols["icon"][1]) / 2, y), zorder=6)
+        ax.text(cols["name"][0], y, r["hero_name"], ha="left", va="center", color=T.TEXT,
+                fontsize=T.px_to_pt(font), fontweight="bold", alpha=a)
 
-def hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple:
-    hex_str = hex_str.lstrip("#")
-    r, g, b = tuple(int(hex_str[i : i + 2], 16) for i in (0, 2, 4))
-    return (r, g, b, alpha)
-
-
-def get_centered_x(text, font, col_bounds, panel_offset=0):
-    bbox = font.getbbox(str(text))
-    text_width = bbox[2] - bbox[0]
-    col_width = col_bounds[1] - col_bounds[0]
-    return panel_offset + col_bounds[0] + (col_width - text_width) // 2
-
-
-def render_split_chart(
-    data_items: list, title: str, subtitle: str, output_path: Path, is_grouped: bool = False
-):
-    """
-    Renders a 4-split column hero stats chart (Name, Matches Bar, Winrate Bar).
-    Handles both flat sorted lists and grouped archetype lists.
-    """
-    # Calculate Total Canvas Height
-    num_rows = 0
-    num_group_headers = 0
-
-    if is_grouped:
-        for group in data_items:
-            num_group_headers += 1
-            num_rows += len(group["heroes"])
-    else:
-        num_rows = len(data_items)
-
-    calculated_height = (
-        HEADER_HEIGHT
-        + (num_rows * ROW_HEIGHT)
-        + (num_group_headers * 40)
-        + PADDING
-        + FOOTER_HEIGHT - 10
-    )
-
-    image = Image.new("RGBA", (WIDTH, calculated_height), BG_COLOR)
-    draw = ImageDraw.Draw(image)
-
-    # Fonts
-    try:
-        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
-        subtitle_font = ImageFont.truetype("DejaVuSans.ttf", 16)
-        section_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
-        header_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
-        footer_font = ImageFont.truetype("DejaVuSans.ttf", 14)
-    except IOError:
-        font = header_font = title_font = subtitle_font = section_font = footer_font = ImageFont.load_default()
-
-    # Title & Subtitle
-    draw.text((PADDING, PADDING), title, font=title_font, fill=TITLE_COLOR)
-    draw.text((PADDING, PADDING + 38), subtitle, font=subtitle_font, fill=SUBTITLE_COLOR)
-
-    # Legend Header
-    legend_x = PADDING
-    legend_y = PADDING + 70
-    for h_type, color_rgba in TYPE_COLORS.items():
-        draw.rectangle([(legend_x, legend_y + 3), (legend_x + 14, legend_y + 17)], fill=color_rgba)
-        draw.text((legend_x + 20, legend_y), h_type, font=header_font, fill=TEXT_COLOR)
-        legend_x += 120
-
-    # Column Headers
-    header_y = PADDING + 95
-    matches_header_x = COL_MATCHES_BAR[0] + 100
-    winrate_header_x = COL_WINRATE_BAR[0]+ 100
-    draw.text((matches_header_x, header_y), "TOTAL MATCHES", font=header_font, fill=TITLE_COLOR)
-    draw.text((winrate_header_x, header_y), "WIN RATE", font=header_font, fill=TITLE_COLOR)
-
-    draw.line([(PADDING, HEADER_HEIGHT - 12), (WIDTH - PADDING, HEADER_HEIGHT - 12)], fill=(60, 60, 65, 255), width=1)
-
-    # Reference limits for relative bar scaling
-    all_heroes = []
-    if is_grouped:
-        for g in data_items:
-            all_heroes.extend(g["heroes"])
-    else:
-        all_heroes = data_items
-
-    max_matches = max([h["total_matches"] for h in all_heroes]) if all_heroes else 1
-    min_wr = min([h["winrate"] for h in all_heroes]) if all_heroes else 0
-    max_wr = max([h["winrate"] for h in all_heroes]) if all_heroes else 100
-
-    current_y = HEADER_HEIGHT
-
-    # Helper to render individual row
-    def draw_hero_row(hero, y_pos):
-        # Use full solid color (no DIM_ALPHA)
-        h_color = TYPE_COLORS.get(hero["hero_type"].lower(), TEXT_COLOR)
-
-        text_y = y_pos + (ROW_HEIGHT // 2) - 10
-        bar_y1 = y_pos + 8
-        bar_y2 = y_pos + ROW_HEIGHT - 8
-
-        # 1. Hero Name (Right-aligned)
-        bbox = font.getbbox(hero["hero_name"])
-        name_width = bbox[2] - bbox[0]
-        name_x = COL_HERO_NAME[1] - name_width - 10
-        draw.text((name_x, text_y), hero["hero_name"], font=font, fill=TITLE_COLOR)
-
-        # 2. Total Matches Bar (Solid Fill)
-        m_start_x, m_end_x = COL_MATCHES_BAR
-        m_max_width = m_end_x - m_start_x
-        m_fill_pct = hero["total_matches"] / max_matches
-        m_bar_w = int(m_max_width * m_fill_pct)
-
-        draw.rectangle([(m_start_x, bar_y1), (m_end_x, bar_y2)], fill=TRACK_BG)
-        draw.rectangle([(m_start_x, bar_y1), (m_start_x + m_bar_w, bar_y2)], fill=h_color)
-
-        # White text inside solid vibrant bar for max contrast
-        m_val_str = f"{hero['total_matches']:,}"
-        m_val_bbox = font.getbbox(m_val_str)
-        m_val_w = m_val_bbox[2] - m_val_bbox[0]
-        draw.text((m_start_x + m_bar_w - m_val_w - 8, text_y), m_val_str, font=font, fill=(255, 255, 255, 255), stroke_width=1,stroke_fill=(0, 0, 0, 220))
-
-        # 3. Win Rate Bar (Solid Fill)
-        w_start_x, w_end_x = COL_WINRATE_BAR
-        w_max_width = w_end_x - w_start_x
-        w_fill_pct = (hero["winrate"] - (min_wr - 2)) / (max_wr - (min_wr - 2)) if max_wr != min_wr else 0.5
-        w_bar_w = int(w_max_width * max(0.05, min(1.0, w_fill_pct)))
-
-        draw.rectangle([(w_start_x, bar_y1), (w_end_x, bar_y2)], fill=TRACK_BG)
-        draw.rectangle([(w_start_x, bar_y1), (w_start_x + w_bar_w, bar_y2)], fill=h_color)
-
-        w_val_str = f"{hero['winrate']:.2f}%"
-        w_val_bbox = font.getbbox(w_val_str)
-        w_val_w = w_val_bbox[2] - w_val_bbox[0]
-        draw.text((w_start_x + w_bar_w - w_val_w - 8, text_y), w_val_str, font=font, fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0, 220))
-
-    # Drawing Loop
-    if is_grouped:
-        for group in data_items:
-            # Group Section Header
-            draw.text((COL_HERO_NAME[1] - 80, current_y + 10), group["group_name"], font=section_font, fill=SECTION_HEADER_COLOR)
-            current_y += 35
-
-            for hero in group["heroes"]:
-                draw_hero_row(hero, current_y)
-                current_y += ROW_HEIGHT
-            current_y += 10
-    else:
-        for hero in data_items:
-            draw_hero_row(hero, current_y)
-            current_y += ROW_HEIGHT
-
-    # Footer
-    footer_y = calculated_height - FOOTER_HEIGHT + 10
-    draw.text((PADDING, footer_y), "Chart: @eReys13 • Source: Deadlock Community API", font=footer_font, fill=FOOTER_COLOR)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output_path)
-    print(f"Successfully generated: {output_path.name}")
+        wr_now = 50 + (r["winrate"] - 50) * t
+        x50, xw = to_x(50), to_x(wr_now)
+        bar_col = T.wr_color(r["winrate"], r["wr_lo"], r["wr_hi"])
+        ax.add_patch(Rectangle((min(x50, xw), y - BAR_H / 2), abs(xw - x50), BAR_H,
+                               color=bar_col, alpha=0.9 * a, zorder=3, lw=0))
+        if t >= 1:
+            ax.plot([to_x(r["wr_lo"]), to_x(r["wr_hi"])], [y, y], color=T.TEXT, lw=2.2, alpha=0.5 * a, zorder=4)
+            right = r["winrate"] >= 50
+            ax.text(to_x(r["wr_hi"] if right else r["wr_lo"]) + (6 if right else -6) / W, y,
+                    f"{r['winrate']:.1f}%", ha="left" if right else "right", va="center",
+                    color=bar_col if bar_col != T.TEXT_MUTED else T.TEXT, fontsize=T.px_to_pt(val_font),
+                    fontweight="bold", alpha=a, zorder=5, path_effects=T.STROKE)
+        ax.text(1.0, y, f"{r['pick_rate']:.0f}%", ha="right", va="center", color=T.TEXT_MUTED,
+                fontsize=T.px_to_pt(val_font), alpha=a)
+        y += 1
+    return fig
 
 
-def main():
-    if not CSV_FILE_PATH.exists():
-        print(f"Error: CSV not found at {CSV_FILE_PATH}")
-        sys.exit(1)
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("week_dir", nargs="?", default=None)
+    ap.add_argument("--highlight", default="")
+    ap.add_argument("--progress", type=float, default=1.0)
+    args = ap.parse_args()
 
-    df = pd.read_csv(CSV_FILE_PATH)
-    df.columns = df.columns.str.strip().str.lower()
-    records = df.to_dict(orient="records")
+    data_dir = T.resolve_target_dir(args.week_dir)
+    out_dir = data_dir / "graphs"
+    df = prepare(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(df["total_matches"]))
+    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
+    span = float(np.ceil(max((df["wr_hi"] - 50).abs().max(), (df["wr_lo"] - 50).abs().max()) + 0.5))
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    tb = pd.concat([df.head(TOP_N), df.tail(TOP_N)])
+    sub = (f"{df.iloc[0]['hero_name']} leads at {df.iloc[0]['winrate']:.1f}%  ·  "
+           f"{df.iloc[-1]['hero_name']} trails at {df.iloc[-1]['winrate']:.1f}%")
+    T.save_card(render(tb, meta, f"BEST & WORST {TOP_N} HEROES", sub, gap_after=TOP_N - 1,
+                       span=span, progress=args.progress, highlight=hl),
+                out_dir / "hero_winrates_top_bottom.png")
 
-    # ---------------------------------------------------------
-    # CHART 1: Flat - Descending by Win Rate
-    # ---------------------------------------------------------
-    flat_winrate = sorted(records, key=lambda x: x["winrate"], reverse=True)
-    render_split_chart(
-        data_items=flat_winrate,
-        title="Hero Total Matches & Winrate (Ranked by Win Rate)",
-        subtitle="Overall hero performance overview ranked from highest to lowest win rate.",
-        output_path=OUTPUT_DIR / "hero_stats_flat_desc_winrate.png",
-        is_grouped=False,
-    )
-
-    # ---------------------------------------------------------
-    # CHART 2: Flat - Descending by Total Matches
-    # ---------------------------------------------------------
-    flat_matches = sorted(records, key=lambda x: x["total_matches"], reverse=True)
-    render_split_chart(
-        data_items=flat_matches,
-        title="Hero Total Matches & Winrate (Ranked by Matches Played)",
-        subtitle="Overall hero pick frequency ranked from highest to lowest total matches.",
-        output_path=OUTPUT_DIR / "hero_stats_flat_desc_matches.png",
-        is_grouped=False,
-    )
-
-    # Order archetypes logically
-    archetypes = ["brawler", "mystic", "marksman", "assassin"]
-
-    # ---------------------------------------------------------
-    # CHART 3: Grouped by Archetype - Descending by Win Rate
-    # ---------------------------------------------------------
-    grouped_winrate = []
-    for arch in archetypes:
-        heroes = [r for r in records if str(r["hero_type"]).lower() == arch]
-        heroes = sorted(heroes, key=lambda x: x["winrate"], reverse=True)
-        if heroes:
-            grouped_winrate.append({"group_name": arch, "heroes": heroes})
-
-    render_split_chart(
-        data_items=grouped_winrate,
-        title="Hero Performance Grouped by Archetype (Desc. Win Rate)",
-        subtitle="Comparing win rates within each archetype class.",
-        output_path=OUTPUT_DIR / "hero_stats_grouped_desc_winrate.png",
-        is_grouped=True,
-    )
-
-    # ---------------------------------------------------------
-    # CHART 4: Grouped by Archetype - Descending by Total Matches
-    # ---------------------------------------------------------
-    grouped_matches = []
-    for arch in archetypes:
-        heroes = [r for r in records if str(r["hero_type"]).lower() == arch]
-        heroes = sorted(heroes, key=lambda x: x["total_matches"], reverse=True)
-        if heroes:
-            grouped_matches.append({"group_name": arch, "heroes": heroes})
-
-    render_split_chart(
-        data_items=grouped_matches,
-        title="Hero Performance Grouped by Archetype (Desc. Matches)",
-        subtitle="Comparing pick volume within each archetype class.",
-        output_path=OUTPUT_DIR / "hero_stats_grouped_desc_matches.png",
-        is_grouped=True,
-    )
+    for htype in T.ARCHETYPE_ORDER:
+        g = df[df["hero_type"] == htype]
+        if g.empty:
+            continue
+        above = int((g["wr_lo"] > 50).sum())
+        below = int((g["wr_hi"] < 50).sum())
+        sub = f"{above} clearly above 50%  ·  {below} clearly below  ·  {len(g) - above - below} too close to call"
+        title = ("MARKSMEN" if htype == "marksman" else f"{htype.upper()}S") + ": WIN RATE"
+        T.save_card(render(g, meta, title, sub, span=span, progress=args.progress, highlight=hl),
+                    out_dir / f"hero_winrates_{htype}.png")
+    print(f"Saved hero win-rate cards to {out_dir}")
 
 
 if __name__ == "__main__":

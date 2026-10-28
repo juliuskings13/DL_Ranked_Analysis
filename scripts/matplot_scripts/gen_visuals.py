@@ -1,5 +1,6 @@
 import argparse
 import subprocess
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
@@ -30,23 +31,30 @@ target_dir = (
     / f"week{week_num}_analysis"
 )
 
+# Every script renders 1080x1080 cards via theme.py / chart_stats.py
 plotting_scripts = [
+    "pick_rate_winrate_scatter.py",            # replaces hero_wr_matches_representation.py
+    "hero_wr_total_matches_split_column.py",   # top/bottom 10 + per-archetype win-rate cards
     "balance_wr_distribution.py",
-    "global_pres_wr_dumbbell_chart.py",
-    "hero_duo_synergy_table.py",
-    "hero_duration_heatmaps.py",
-    "hero_freq_on_most_freq_comps.py",
-    "hero_type_differentials.py",
-    "hero_wr_matches_representation.py",
-    "hero_wr_total_matches_split_column.py",
-    "matchup_bubble_chart.py",
+    "archetype_stacking.py",                   # replaces hero_type_differentials.py
+    "matchup_bubble_chart.py",                 # archetype count matrices
+    "hero_strength_and_scaling.py",            # early-vs-late scatter + win-rate and scaling heatmaps
+    "hero_duo_synergy_table.py",               # best / worst synergy lift
     "most_freq_comps.py",
-    "unique_comps_pie_charts.py",
-    "unique_comps_vs_match_volume_decay.py",
+    "comp_uniqueness.py",                      # replaces the pie + decay charts
+    "match_duration.py",                       # match-length IQR (defines early / late game)
 ]
 
+failed = []
 for script in plotting_scripts:
     script_path = script_dir / script
     print(f"running {script} for directory: {target_dir}")
-    # Pass target_dir as positional arg sys.argv[1]
-    subprocess.run(["python3", str(script_path), str(target_dir)], check=True)
+    # sys.executable = the same Python (and venv) that launched this runner
+    result = subprocess.run([sys.executable, str(script_path), str(target_dir)])
+    if result.returncode != 0:
+        failed.append(script)
+
+if failed:
+    print(f"\n{len(failed)} chart script(s) failed: {', '.join(failed)}")
+    sys.exit(1)
+print(f"\nAll {len(plotting_scripts)} chart scripts finished. Cards are in {target_dir / 'graphs'}")

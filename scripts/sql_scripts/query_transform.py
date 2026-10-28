@@ -643,6 +643,23 @@ def extract_avg_duration(week_label: str) -> pd.DataFrame:
     """)
     return run_query(query, params={"week_label": week_label})
 
+def extract_duration_minutes(week_label: str) -> pd.DataFrame:
+    """Matches per whole minute of length (1-minute bins, no 20-minute floor).
+    Feeds match_duration.py and the IQR-based early/late cut-offs in chart_stats.py."""
+    query = text("""
+        SELECT
+            (m.match_duration_s / 60) AS duration_min,   -- integer division: 37:42 -> 37
+            COUNT(*) AS games
+        FROM match_hero_roster m
+        JOIN patch_periods tp ON tp.period_name = :week_label
+          AND m.start_time >= tp.start_time
+          AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
+        GROUP BY duration_min
+        ORDER BY duration_min;
+    """)
+    return run_query(query, params={"week_label": week_label})
+
+
 
 def extract_duration_vs_winrate(week_label: str) -> pd.DataFrame:
     """Segments match duration into 5-minute buckets to analyze win rates over time."""
@@ -751,6 +768,7 @@ def run_etl(target_date: Optional[date] = None):
         ("marksman_comp_wr", lambda: extract_herotype_comp_wr("marksman", week_label), ["csv"]),
         ("assassin_comp_wr", lambda: extract_herotype_comp_wr("assassin", week_label), ["csv"]),
         ("avg_duration", lambda: extract_avg_duration(week_label), ["csv"]),
+        ("match_duration_minutes", lambda: extract_duration_minutes(week_label), ["csv"]),
         ("hero_duration_scaling", lambda: extract_duration_vs_winrate(week_label), ["parquet"]),
     ]
 

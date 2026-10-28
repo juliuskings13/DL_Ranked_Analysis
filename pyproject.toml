@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dl-ranked-analysis"
+version = "0.1.0"
+description = "Deadlock ranked-match ingest, SQL transforms and chart pipeline"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "pyarrow",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "requests",
+    "matplotlib",
+    "seaborn",
+    "pillow",
+    "python-dotenv",
+]
+
+[tool.setuptools]
+# Top-level modules in the project root that every script can import once installed.
+# Add "theme" and "chart_stats" here too if you move them up to the root.
+py-modules = ["db_config"]
+packages = []   # don't treat scripts/, assets/ or week*_analysis/ as packages

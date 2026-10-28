@@ -1,240 +1,130 @@
-import sys
-from datetime import date
-from pathlib import Path
+"""
+most_freq_comps.py — "most played team comps" card (1080x1080).
+
+Top 8 exact 6-hero comps by games played (ROWS). Icons are sorted by archetype (brawler →
+marksman → assassin → mystic) then name, so rows can be compared column by column.
+Win rates carry 95% CIs: with ~20–40 games each, most comps are "too close to call",
+which is itself the finding (no comp is a proven meta).
+
+Reads top_20_freq_comps.csv only. The old win-filtered / lose-filtered lists
+(top_20_freq_win_comps / lose_comps) select on the outcome, which guarantees extreme
+win rates, so they're no longer drawn.
+
+Usage: python3 most_freq_comps.py [week_dir] [--highlight "Haze"]
+"""
+from __future__ import annotations
+
+import argparse
+
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
+from matplotlib.patches import Rectangle
 
-# --- CONFIGURATION & PATH RESOLUTION ---
-RANKED_START_DATE = date(2026, 7, 30)
+import theme as T
+from chart_stats import load_hero_meta, total_matches_from_hero_rows, wilson_ci
 
-def get_current_week_number() -> int:
-    """Calculates the target week number (0-indexed offset for completed week)."""
-    days_elapsed = (date.today() - RANKED_START_DATE).days
-    return days_elapsed // 7
-
-def resolve_target_dir() -> Path:
-    """Gets target dir from CLI args or defaults to current week's analysis folder."""
-    if len(sys.argv) > 1:
-        target = Path(sys.argv[1])
-        if target.is_dir():
-            return target
-
-    week_num = get_current_week_number()
-    return Path.home() / "Projects" / "DL_ranked_analysis" / f"week{week_num}_analysis"
-
-DATA_DIR = resolve_target_dir()
-OUTPUT_DIR = DATA_DIR / "graphs"
-ASSETS_BASE = Path.home() / "Projects" / "DL_ranked_analysis" / "assets"
-
-TABLE_CONFIGS = [
-    {
-        "csv": DATA_DIR / "top_20_freq_comps.csv",
-        "title": "MOST FREQUENT TEAM COMPS",
-        "output": OUTPUT_DIR / "most_freq_team_comps_table.png",
-    },
-    {
-        "csv": DATA_DIR / "top_20_freq_win_comps.csv",
-        "title": "MOST FREQUENT WINNING TEAM COMPS",
-        "output": OUTPUT_DIR / "most_freq_winning_team_comps_table.png",
-    },
-    {
-        "csv": DATA_DIR / "top_20_freq_lose_comps.csv",
-        "title": "MOST FREQUENT LOSING TEAM COMPS",
-        "output": OUTPUT_DIR / "most_freq_losing_team_comps_table.png",
-    },
-]    
-
-# --- DEADLOCK SCHEME CONFIGURATION ---
-BG_COLOR = (15, 23, 23, 255)       # Solid deep teal-slate
-STRIPE_COLOR = (22, 36, 34, 255)   # Alternating row tint
-TEXT_COLOR = (244, 240, 226, 255)  # Cream logo text
-TITLE_COLOR = (255, 208, 115, 255) # Deadlock amber gold accent
-GREEN_WR = (65, 214, 126, 255)
-RED_WR = (239, 99, 99, 255)
-FOOTER_COLOR = (140, 145, 155, 255)
-DIVIDER_COLOR = (45, 60, 60, 255)
-
-# Table Dimensions for 2-Column Side-by-Side View
-WIDTH = 1800
-PANEL_WIDTH = 860
-ROW_HEIGHT = 80
-HEADER_HEIGHT = 140
-PADDING = 25
-FOOTER_HEIGHT = 45
-
-# Column Boundaries (relative within each panel)
-COL_RANK = (10, 65)
-COL_FREQ = (65, 175)
-COL_ICONS = (175, 715)
-COL_WR = (715, 850)
+ROWS = 8                    # 10 felt cluttered; icons/fonts scale automatically if you change it
+ICON_FILL = 0.66            # icon diameter as a share of row height (the rest is breathing room)
+ROW_CARD_H = 0.84           # each row sits on its own panel with a gap between panels
+DIM_ALPHA = 0.25
 
 
-def get_hero_icon(name: str, winrate: float) -> Image.Image:
-    """Selects icon asset folder based on composition win rate."""
-    if winrate > 50.0:
-        asset_folder = ASSETS_BASE / "gloat_icons"
-    elif winrate == 50.0:
-        asset_folder = ASSETS_BASE / "base_icons"
-    else:
-        asset_folder = ASSETS_BASE / "critical"
-
-    icon_path = asset_folder / f"{name}.png"
-    if not icon_path.exists():
-        icon_path = ASSETS_BASE / "base_icons" / f"{name}.png"
-
-    icon_size = ROW_HEIGHT - 15
-    if icon_path.exists():
-        img = Image.open(icon_path).convert("RGBA")
-        img.thumbnail((icon_size, icon_size), Image.Resampling.LANCZOS)
-        return img
-    else:
-        return Image.new("RGBA", (icon_size, icon_size), (60, 60, 65, 255))
+def prepare(data_dir) -> tuple[pd.DataFrame, dict]:
+    heroes = load_hero_meta(data_dir)
+    htype = dict(zip(heroes["hero_name"], heroes["hero_type"]))
+    df = pd.read_csv(data_dir / "top_20_freq_comps.csv")
+    df.columns = df.columns.str.strip().str.lower()
+    df = df.sort_values("total_matches", ascending=False).head(ROWS).reset_index(drop=True)
+    df["heroes"] = df["comp_names"].map(
+        lambda s: sorted((h.strip() for h in s.split(",")),
+                         key=lambda h: (T.archetype_rank(htype.get(h, "")), h)))
+    lo, hi = wilson_ci(df["winrate"] / 100 * df["total_matches"], df["total_matches"])
+    df["lo"], df["hi"] = lo * 100, hi * 100
+    return df, htype
 
 
-def get_centered_x(text, font, col_bounds, panel_offset=0):
-    """Calculates starting X pixel coordinate to center text within column bounds."""
-    bbox = font.getbbox(str(text))
-    text_width = bbox[2] - bbox[0]
-    col_width = col_bounds[1] - col_bounds[0]
-    return panel_offset + col_bounds[0] + (col_width - text_width) // 2
+def render(df: pd.DataFrame, htype: dict, meta: T.ChartMeta, team_sides: int,
+           progress: float = 1.0, highlight: set[str] | None = None) -> "T.Figure":
+    highlight = {h.lower() for h in highlight} if highlight else None
+    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
+    top = df.iloc[0]
+    n_clear = int(((df["lo"] > 50) | (df["hi"] < 50)).sum())
+    fig, ax = T.new_table_card()
+    T.draw_header(fig, "THE MOST PLAYED TEAM COMPS",
+                  f"Even the #1 comp appeared in just {int(top['total_matches'])} of "
+                  f"{team_sides:,} team line-ups", alpha=p_frame)
+    T.draw_archetype_legend(fig, alpha=p_frame)
+    T.draw_footer(fig, meta, alpha=p_frame)
+    n = len(df)
+    row = T.table_rows(fig, ax, n, header_rows=0.8, footer_rows=0.55)
+    W, _ = T.content_px(fig)
+    icon_px = row * ICON_FILL
+    font = min(row * 0.34, 30)
+    wr_font = min(font * 1.2, 34)
+    hdr_px = 17
+    widths = {
+        "rank": T.text_px("10", font),
+        "comp": None,
+        "games": max(T.text_px("GAMES", hdr_px), T.text_px("999", font, bold=False)),
+        "wr": max(T.text_px("WIN %", hdr_px), T.text_px("100%", wr_font)),
+        "range": max(T.text_px("95% RANGE", hdr_px), T.text_px("100–100%", font, bold=False)),
+    }
+    cols = T.layout_columns(widths, W, gap_px=26)
+    c0, c1 = cols["comp"]
+    # spread the six icons evenly across the comp column, but never wider than icon + 40% gap
+    step = min((c1 - c0 - icon_px / W) / 5, icon_px * 1.4 / W)
+    icon_x = [c0 + icon_px / 2 / W + k * step for k in range(6)]
 
+    hdr = dict(color=T.GOLD, fontsize=T.px_to_pt(hdr_px), fontweight="bold", va="center", alpha=p_frame)
+    ax.text((icon_x[0] + icon_x[-1]) / 2, -0.95, "COMP", ha="center", **hdr)
+    ax.text(cols["games"][1], -0.95, "GAMES", ha="right", **hdr)
+    ax.text(cols["wr"][1], -0.95, "WIN %", ha="right", **hdr)
+    ax.text(cols["range"][1], -0.95, "95% RANGE", ha="right", **hdr)
 
-def render_table(data: list, title: str, output_path: Path):
-    """Renders a 2-column team composition table from input data."""
-    col1_data = data[:10]
-    col2_data = data[10:20]
-    num_rows = max(len(col1_data), len(col2_data))
+    ax.text(1.0, n - 0.35, f"{n_clear} of {n} win rates clearly differ from 50% (colored)  ·  "
+            "gray = too few games to call", ha="right", va="center", color=T.TEXT_MUTED,
+            fontsize=T.px_to_pt(16), alpha=p_frame)
 
-    calculated_height = HEADER_HEIGHT + (num_rows * ROW_HEIGHT) + PADDING + FOOTER_HEIGHT
-    image = Image.new("RGBA", (WIDTH, calculated_height), BG_COLOR)
-    draw = ImageDraw.Draw(image)
-
-    try:
-        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
-        header_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
-        footer_font = ImageFont.truetype("DejaVuSans.ttf", 18)
-    except IOError:
-        font = header_font = title_font = footer_font = ImageFont.load_default()
-
-    # Title
-    title_x = get_centered_x(title, title_font, (0, WIDTH))
-    draw.text((title_x, PADDING), title, font=title_font, fill=TITLE_COLOR)
-
-    # Panel Offsets
-    panel_offsets = [PADDING, WIDTH - PANEL_WIDTH - PADDING]
-
-    # Draw Headers for both panels
-    header_y = PADDING + 55
-    headers = [
-        ("#", COL_RANK),
-        ("Matches", COL_FREQ),
-        ("Team Composition", COL_ICONS),
-        ("Win Rate", COL_WR),
-    ]
-
-    for p_offset in panel_offsets:
-        for text, bounds in headers:
-            x = get_centered_x(text, header_font, bounds, panel_offset=p_offset)
-            draw.text((x, header_y), text, font=header_font, fill=TEXT_COLOR)
-        draw.line(
-            [(p_offset, HEADER_HEIGHT - 10), (p_offset + PANEL_WIDTH, HEADER_HEIGHT - 10)],
-            fill=(80, 85, 95, 255),
-            width=2,
-        )
-
-    # Middle Separator
-    middle_x = WIDTH // 2
-    draw.line([(middle_x, HEADER_HEIGHT - 20), (middle_x, calculated_height - FOOTER_HEIGHT - 10)], fill=DIVIDER_COLOR, width=3)
-
-    # Render Both Panels
-    panels_data = [col1_data, col2_data]
-
-    for panel_idx, panel_rows in enumerate(panels_data):
-        p_offset = panel_offsets[panel_idx]
-
-        # Row Backgrounds
-        y_offset = HEADER_HEIGHT
-        for i, _ in enumerate(panel_rows):
-            fill_color = STRIPE_COLOR if i % 2 == 1 else BG_COLOR
-            draw.rectangle([(p_offset, y_offset), (p_offset + PANEL_WIDTH, y_offset + ROW_HEIGHT)], fill=fill_color)
-            y_offset += ROW_HEIGHT
-
-        # Row Content
-        y_offset = HEADER_HEIGHT
-        for row in panel_rows:
-            text_y = y_offset + (ROW_HEIGHT // 2) - 13
-            icon_dim = ROW_HEIGHT - 15
-            icon_y = y_offset + (ROW_HEIGHT // 2) - (icon_dim // 2)
-
-            # Rank
-            rank_str = str(row["rank"])
-            rank_x = get_centered_x(rank_str, font, COL_RANK, p_offset)
-            draw.text((rank_x, text_y), rank_str, font=font, fill=TEXT_COLOR)
-
-            # Frequency
-            freq_str = f"{row['freq']:,}"
-            freq_x = get_centered_x(freq_str, font, COL_FREQ, p_offset)
-            draw.text((freq_x, text_y), freq_str, font=font, fill=TEXT_COLOR)
-
-            # 6 Hero Icons
-            total_icons_width = 6 * icon_dim
-            col_icons_width = COL_ICONS[1] - COL_ICONS[0]
-            x_icon_offset = p_offset + COL_ICONS[0] + (col_icons_width - total_icons_width) // 2
-
-            for hero in row["lineup"]:
-                icon = get_hero_icon(hero, row["winrate"])
-                image.paste(icon, (int(x_icon_offset), int(icon_y)), icon)
-                x_icon_offset += icon_dim
-
-            # Win Rate
-            wr_str = f"{row['winrate']:.1f}%"
-            wr_x = get_centered_x(wr_str, font, COL_WR, p_offset)
-            wr_color = GREEN_WR if row["winrate"] >= 50.0 else RED_WR
-            draw.text((wr_x, text_y), wr_str, font=font, fill=wr_color)
-
-            y_offset += ROW_HEIGHT
-
-    # Footer
-    footer_y = calculated_height - FOOTER_HEIGHT + 10
-    draw.text((30, footer_y), "Data Source: Deadlock Community API", font=footer_font, fill=FOOTER_COLOR)
-
-    signature_text = "Analysis by @eReys13"
-    sig_bbox = footer_font.getbbox(signature_text)
-    sig_x = WIDTH - 30 - (sig_bbox[2] - sig_bbox[0])
-    draw.text((sig_x, footer_y), signature_text, font=footer_font, fill=FOOTER_COLOR)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output_path)
-    print(f"Successfully generated 2-column table at: {output_path}")
-
-
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    for config in TABLE_CONFIGS:
-        csv_path = config["csv"]
-        if not csv_path.exists():
-            print(f"Skipping {csv_path.name} (File not found)")
+    for i, r in df.iterrows():
+        s = 0.15 + 0.5 * i / max(n - 1, 1)
+        t = T.ease_out_cubic(T.phase(progress, s, s + 0.3))
+        hl = highlight is None or bool({h.lower() for h in r["heroes"]} & highlight)
+        a = (1.0 if hl else DIM_ALPHA) * t
+        ax.add_patch(Rectangle((0, i - ROW_CARD_H / 2), 1, ROW_CARD_H, color=T.PANEL,
+                               alpha=0.75 * p_frame, lw=0, zorder=0))
+        if t <= 0:
             continue
+        ax.text(cols["rank"][0] + 8 / W, i, f"{i + 1}", ha="left", va="center", color=T.TEXT_MUTED,
+                fontsize=T.px_to_pt(font), fontweight="bold", alpha=a)
+        for k, h in enumerate(r["heroes"]):
+            T.add_icon(ax, T.icon_any(h, icon_px, T.archetype_color(htype.get(h, "")), a,
+                                      wr=r["winrate"]),          # team (comp) win rate
+                       (icon_x[k], i), zorder=6)
+        ax.text(cols["games"][1], i, f"{int(r['total_matches'])}", ha="right", va="center",
+                color=T.TEXT_MUTED, fontsize=T.px_to_pt(font), alpha=a)
+        col = T.wr_color(r["winrate"], r["lo"], r["hi"])
+        ax.text(cols["wr"][1], i, f"{r['winrate']:.0f}%", ha="right", va="center", color=col,
+                fontsize=T.px_to_pt(wr_font), fontweight="bold", alpha=a)
+        ax.text(cols["range"][1] - 8 / W, i, f"{r['lo']:.0f}–{r['hi']:.0f}%", ha="right", va="center",
+                color=T.TEXT_MUTED, fontsize=T.px_to_pt(font), alpha=a)
+    return fig
 
-        df = pd.read_csv(csv_path)
-        df = df.rename(
-            columns={
-                "comp_names": "lineup",
-                "total_matches": "freq",
-                "winrate": "winrate",
-            }
-        )
 
-        df = df.sort_values(by="freq", ascending=False).reset_index(drop=True)
-        df = df.head(20).copy()
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("week_dir", nargs="?", default=None)
+    ap.add_argument("--highlight", default="")
+    ap.add_argument("--progress", type=float, default=1.0)
+    args = ap.parse_args()
 
-        df["lineup"] = df["lineup"].apply(lambda x: [hero.strip() for hero in x.split(",")])
-        df["rank"] = df.index + 1
-
-        data = df.to_dict(orient="records")
-        render_table(data, config["title"], config["output"])
+    data_dir = T.resolve_target_dir(args.week_dir)
+    df, htype = prepare(data_dir)
+    heroes = load_hero_meta(data_dir)
+    n_matches = total_matches_from_hero_rows(heroes["total_matches"])
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches)
+    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
+    out = data_dir / "graphs" / "most_played_comps.png"
+    T.save_card(render(df, htype, meta, team_sides=2 * n_matches, progress=args.progress, highlight=hl), out)
+    print(f"Saved {out}")
 
 
 if __name__ == "__main__":
