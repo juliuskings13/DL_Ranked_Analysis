@@ -1,327 +1,88 @@
-import json
+"""
+ingest_dl_comm_api_database.py — small dimension tables via the Deadlock API's SQL endpoint.
+
+Currently syncs `items` (for future item/build analysis). Match data is NOT loaded here any
+more: the parquet ingest (ingest_dl_comm_api_parquet.py) is the single source for
+match_player, because the two scripts used to create match_player with different columns
+and whichever ran first broke the other.
+
+The API client below is reusable for any other small table: bounded retries with
+exponential backoff on 429 / 5xx, a request timeout, and keyset pagination
+(WHERE key > last_key) instead of LIMIT/OFFSET, which gets slower every page and can skip
+or repeat rows if the table changes between requests.
+
+Usage: python ingest_dl_comm_api_database.py
+"""
+from __future__ import annotations
+
+import sys
 import time
-import urllib.parse
-import psycopg2
-from psycopg2.extras import execute_values
+
 import requests
-from db_config import PG_CONFIG                  
-from db_config import PG_CONFIG as DB_Params     
-from db_config import DB_URI   
 
-# ==========================================
-# CONFIGURATION
-# ==========================================
-DEADLOCK_API_SQL_URL = "https://api.deadlock-api.com/v1/sql"
+from pipeline_common import connect, copy_upsert, ensure_schema, setup_logging
 
-# Patch timestamp (July 30, 2026 Ranked update)
-PATCH_START_TIME = "2026-07-30 00:00:00"
-
-# Fetch batch size
-BATCH_SIZE = 2500
-
-HEADERS = {"User-Agent": "Mozilla/5.0 (Deadlock Analytics Local Dev)"}
+SQL_URL = "https://api.deadlock-api.com/v1/sql"
+HEADERS = {"User-Agent": "Deadlock Analytics (personal project)"}
+log = setup_logging()
 
 
-# ==========================================
-# 1. LOCAL POSTGRES SETUP
-# ==========================================
-def setup_local_postgres():
-    """Sets up local tables corresponding to ClickHouse schemas."""
-    conn = psycopg2.connect(**PG_CONFIG)
-    cur = conn.cursor()
-
-    print("🔧 Setting up PostgreSQL schema...")
-
-    # Items dimension table
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS items (
-            id BIGINT PRIMARY KEY,
-            name VARCHAR(100),
-            tier INT,
-            type VARCHAR(50),
-            slot_type VARCHAR(50),
-            cost INT
-        );
-    """
-    )
-
-    # Roster context table (Strictly Ranked matches)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS player_match_roster (
-            match_id BIGINT,
-            account_id BIGINT,
-            start_time TIMESTAMP WITH TIME ZONE,
-            game_mode VARCHAR(50),
-            match_duration_s INT,
-            won BOOLEAN,
-            mate_ids BIGINT[],
-            enemy_ids BIGINT[],
-            PRIMARY KEY (match_id, account_id)
-        );
-    """
-    )
-
-    # Core telemetry fact table (Strictly Ranked players/matches)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS match_player (
-            match_id BIGINT,
-            account_id BIGINT,
-            start_time TIMESTAMP WITH TIME ZONE,
-            duration_s INT,
-            match_mode VARCHAR(50),
-            game_mode VARCHAR(50),
-            winning_team VARCHAR(20),
-            team VARCHAR(20),
-            won BOOLEAN,
-            hero_id INT,
-            kills INT,
-            deaths INT,
-            assists INT,
-            net_worth INT,
-            last_hits INT,
-            denies INT,
-            assigned_lane INT,
-            final_stats JSONB,
-            PRIMARY KEY (match_id, account_id)
-        );
-    """
-    )
-
-    # Derived View: Matches table
-    cur.execute(
-        """
-        CREATE OR REPLACE VIEW matches AS
-        SELECT 
-            match_id,
-            MIN(start_time) AS start_time,
-            MAX(duration_s) AS duration_s,
-            MAX(winning_team) AS winning_team,
-            MAX(match_mode) AS match_mode,
-            MAX(game_mode) AS game_mode
-        FROM match_player
-        GROUP BY match_id;
-    """
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("✅ Local PostgreSQL schema ready.\n")
+def query_api(sql: str, max_attempts: int = 6) -> list[dict]:
+    """Run a ClickHouse query on the community API; retries 429/5xx with backoff (5s→120s)."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            res = requests.get(SQL_URL, params={"query": sql, "format": "json"}, headers=HEADERS, timeout=60)
+        except requests.RequestException as e:
+            status, detail = None, str(e)
+        else:
+            if res.status_code == 200:
+                return res.json()
+            status, detail = res.status_code, res.text[:200]
+            if status not in (429, 500, 502, 503, 504):
+                raise RuntimeError(f"API error {status}: {detail}")
+        if attempt == max_attempts:
+            raise RuntimeError(f"API still failing after {max_attempts} attempts ({status}: {detail})")
+        wait = min(5 * 2 ** (attempt - 1), 120)
+        log.warning("API %s, retrying in %ss (attempt %s/%s)", status or "connection error", wait, attempt,
+                    max_attempts)
+        time.sleep(wait)
+    return []
 
 
-# ==========================================
-# 2. CLICKHOUSE QUERY RUNNER
-# ==========================================
-def execute_clickhouse_query(sql_query, attempt=1):
-    encoded_query = urllib.parse.quote(sql_query)
-    url = f"{DEADLOCK_API_SQL_URL}?query={encoded_query}&format=json"
-    
-    response = requests.get(url, headers=HEADERS)
-
-    if response.status_code == 429:
-        # Calculate exponential backoff: 5s, 10s, 20s, 40s...
-        raw_wait = 5 * (2 ** (attempt - 1))
-
-        max_wait_secs = 120
-
-        wait_time = min(raw_wait, max_wait_secs)
-        print(f"  ⚠️ Throttled (429)! Exponential backoff: Waiting {wait_time}s (Attempt #{attempt})...")
-        time.sleep(wait_time)
-        return execute_clickhouse_query(sql_query, attempt=attempt + 1)
-    elif response.status_code != 200:
-        raise Exception(f"API Error {response.status_code}: {response.text}")
-
-    return response.json()
-
-# ==========================================
-# 3. INGESTION ENGINE
-# ==========================================
-def ingest_items():
-    """Syncs static dimension items table."""
-    print("📦 Syncing items table...")
-    query = "SELECT id, name, tier, type, slot_type, cost FROM items"
-    items_data = execute_clickhouse_query(query)
-
-    conn = psycopg2.connect(**PG_CONFIG)
-    cur = conn.cursor()
-
-    insert_query = """
-        INSERT INTO items (id, name, tier, type, slot_type, cost)
-        VALUES %s
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            tier = EXCLUDED.tier,
-            type = EXCLUDED.type,
-            slot_type = EXCLUDED.slot_type,
-            cost = EXCLUDED.cost;
-    """
-
-    records = [
-        (
-            r["id"],
-            r["name"],
-            r.get("tier"),
-            r.get("type"),
-            r.get("slot_type"),
-            r.get("cost"),
-        )
-        for r in items_data
-    ]
-    execute_values(cur, insert_query, records)
-    conn.commit()
-    cur.close()
-    conn.close()
-    print(f"✅ Synced {len(records)} items.\n")
-
-
-def batch_ingest_table(
-    table_name, select_cols, insert_sql, filter_condition, record_transform_fn, start_offset
-):
-    """Generic batch pull from ClickHouse -> Postgres insert."""
-    conn = psycopg2.connect(**PG_CONFIG)
-    cur = conn.cursor()
-
-    offset = start_offset
-    total_inserted = 0
-    print(
-        f"🚀 Starting Ranked-only ingestion for '{table_name}' since {PATCH_START_TIME}..."
-    )
-
+def query_api_paged(select: str, table: str, key: str, page: int = 5000, where: str = "1"):
+    """Yield all rows of a query page by page using keyset pagination on a unique numeric key."""
+    last = -1
     while True:
-        ch_sql = f"""
-            SELECT {select_cols}
-            FROM {table_name}
-            WHERE {filter_condition}
-            ORDER BY match_id ASC, account_id ASC
-            LIMIT {BATCH_SIZE} OFFSET {offset}
-        """
-
-        print(
-            f"  -> Fetching {table_name} rows {offset} to {offset + BATCH_SIZE}..."
-        )
-        rows = execute_clickhouse_query(ch_sql)
-
+        rows = query_api(f"SELECT {select} FROM {table} WHERE ({where}) AND {key} > {last} "
+                         f"ORDER BY {key} LIMIT {page}")
         if not rows:
-            print(
-                f"🎉 Completed {table_name}! Inserted total of {total_inserted} records.\n"
-            )
-            break
-
-        records = [record_transform_fn(r) for r in rows]
-        execute_values(cur, insert_sql, records)
-        conn.commit()
-
-        count = len(rows)
-        total_inserted += count
-        offset += BATCH_SIZE
-
-        # Rest between query batches to respect rate limits
-        time.sleep(10)
-
-    cur.close()
-    conn.close()
+            return
+        yield rows
+        last = rows[-1][key]
+        time.sleep(2)                      # be polite to a free community API
 
 
-# ==========================================
-# 4. MAIN PIPELINE
-# ==========================================
-def main():
-    setup_local_postgres()
+def sync_items(conn) -> int:
+    cols = ["id", "name", "tier", "type", "slot_type", "cost"]
+    total = 0
+    for rows in query_api_paged(", ".join(cols), "items", key="id"):
+        total += copy_upsert(conn, "items", cols, [tuple(r.get(c) for c in cols) for r in rows], key=["id"],
+                             conflict="DO UPDATE SET " + ", ".join(f"{c} = EXCLUDED.{c}" for c in cols[1:]))
+    return total
 
-    # 1. Sync items
-    ingest_items()
-    time.sleep(3)
 
-    # 2. Ingest match_player (Strictly Ranked matches & players)
-    # Checks both string 'Ranked' and numeric code 4 for compatibility
-    match_player_select = """
-        match_id, account_id, start_time, duration_s, match_mode, game_mode, 
-        winning_team, team, won, hero_id, kills, deaths, assists, 
-        net_worth, last_hits, denies, assigned_lane, final_stats
-    """
-    match_player_insert = """
-        INSERT INTO match_player (
-            match_id, account_id, start_time, duration_s, match_mode, game_mode,
-            winning_team, team, won, hero_id, kills, deaths, assists,
-            net_worth, last_hits, denies, assigned_lane, final_stats
-        ) VALUES %s
-        ON CONFLICT (match_id, account_id) DO NOTHING;
-    """
-    match_player_filter = f"""
-        (match_mode = 'Ranked' OR match_mode = '4') 
-        AND start_time >= '{PATCH_START_TIME}'
-    """
-    match_player_transform = lambda r: (
-        r["match_id"],
-        r["account_id"],
-        r["start_time"],
-        r["duration_s"],
-        r["match_mode"],
-        r["game_mode"],
-        r["winning_team"],
-        r["team"],
-        r["won"],
-        r["hero_id"],
-        r["kills"],
-        r["deaths"],
-        r["assists"],
-        r["net_worth"],
-        r["last_hits"],
-        r["denies"],
-        r["assigned_lane"],
-        json.dumps(r["final_stats"]) if r.get("final_stats") else None,
-    )
-
-    batch_ingest_table(
-        "match_player",
-        match_player_select,
-        match_player_insert,
-        match_player_filter,
-        match_player_transform,
-        start_offset=15000
-    )
-
-    # 3. Ingest player_match_roster (Filtered ONLY to matches in match_player)
-    roster_select = "match_id, account_id, start_time, game_mode, match_duration_s, won, mate_ids, enemy_ids"
-    roster_insert = """
-        INSERT INTO player_match_roster 
-        (match_id, account_id, start_time, game_mode, match_duration_s, won, mate_ids, enemy_ids)
-        VALUES %s
-        ON CONFLICT (match_id, account_id) DO NOTHING;
-    """
-    # Dynamic ClickHouse subquery: Only fetch rosters for matches that are in Ranked mode
-    roster_filter = f"""
-        start_time >= '{PATCH_START_TIME}' 
-        AND match_id IN (
-            SELECT DISTINCT match_id 
-            FROM match_player 
-            WHERE (match_mode = 'Ranked' OR match_mode = '4') 
-              AND start_time >= '{PATCH_START_TIME}'
-        )
-    """
-    roster_transform = lambda r: (
-        r["match_id"],
-        r["account_id"],
-        r["start_time"],
-        r["game_mode"],
-        r["match_duration_s"],
-        r["won"],
-        r["mate_ids"],
-        r["enemy_ids"],
-    )
-
-    batch_ingest_table(
-        "player_match_roster",
-        roster_select,
-        roster_insert,
-        roster_filter,
-        roster_transform,
-        start_offset=0
-    )
+def main() -> int:
+    conn = connect()
+    try:
+        ensure_schema(conn)
+        log.info("Synced %s items", sync_items(conn))
+        return 0
+    except Exception:
+        log.exception("Dimension sync failed")
+        return 1
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

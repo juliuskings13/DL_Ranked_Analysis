@@ -4,7 +4,7 @@ An end-to-end data pipeline that ingests every week of global **Deadlock** ranke
 stores them in PostgreSQL, transforms them with SQL, and renders publication-ready charts
 for weekly YouTube analysis videos ([@eReys13](https://www.youtube.com/@eReys13)).
 
-Each weekly run covers roughly **100,000 ranked matches** (about 1.1M player rows).
+Each weekly run covers roughly **90,000 ranked matches** (about 1.1M player rows).
 
 <!-- Add 2–3 of your best charts here, e.g.:
 ![Pick rate vs win rate](docs/examples/pick_rate_winrate_scatter.png)
@@ -24,10 +24,12 @@ flowchart LR
 | Stage | Scripts | What it does |
 |---|---|---|
 | Discover | `db_table_schema_inspect.py` | Crawls the API's table list and per-table schemas (rate-limit aware) to decide what to ingest |
-| Ingest | `ingest_dl_comm_api_database.py`, `ingest_dl_comm_api_parquet.py`, `ingest_missing_rosters.py`, `hero_ingest_deadlock.py`, `ingest_hero_icons.py` | Pulls matches, player rows, hero metadata and icons from the Deadlock Community API; upserts into PostgreSQL in batches |
-| Transform | `query_transform.py` | Runs parameterized SQL per ranked week (win rates, duos, comps, archetype differentials, duration buckets) and exports CSV/Parquet |
+| Ingest | `ingest_dl_comm_api_parquet.py` (matches), `hero_ingest_deadlock.py`, `ingest_dl_comm_api_database.py` (items), `ingest_hero_icons.py` | Streams one week of ranked player rows from the API's parquet dump through DuckDB (date filter pushed down to the remote files), bulk-loads PostgreSQL via `COPY` into a staging table + `INSERT … ON CONFLICT` (idempotent re-runs), then rebuilds that week's team rosters from complete matches only |
+| Validate | `validate_week.py` | Data-quality gate: unknown heroes, incomplete matches, inconsistent winners, duplicate heroes, duration mismatches, roster coverage. Non-zero exit stops the pipeline |
+| Transform | `query_transform.py` | Stages the week's complete matches once in temp tables, then runs every export against them (win rates, duo synergies, archetype differentials and matchups, duration histograms, comp frequency) |
+| Orchestrate | `run_pipeline.py` | Runs heroes → ingest → validate → transform → charts for a week; stops at the first failing stage and can resume with `--from` |
 | Visualize | `gen_visuals.py` + one script per chart | Renders every chart for the target week |
-| Shared | `theme.py`, `chart_stats.py`, `db_config.py` | Card layout & palette, statistics (Wilson CIs, sample thresholds, pick rate), DB settings from env |
+| Shared | `db_config.py`, `pipeline_common.py`, `theme.py`, `chart_stats.py` | DB settings from env (UTC sessions); schema, week math and bulk-load helpers; card layout & palette; statistics (Wilson CIs, sample thresholds, pick rate) |
 
 ## Data model
 
@@ -44,9 +46,7 @@ the analyses need, flattened into four local PostgreSQL tables:
 | `patch_periods` | one row per analysis window | `period_name` (e.g. `Week_8`), `start_time`, `end_time` |
 
 Design choices:
-- **Ranked matches only**, from the 2026-07-30 ranked launch onward. The filter is applied at
-  load time and accepts `match_mode` as either its string label or enum value (`'Ranked'` / `4`),
-  since the source data isn't consistent about which it uses.
+- **Ranked matches only**, from the 2026-07-30 ranked launch onward.
 - **Columns ordered and downcast by width** (BIGINT → INT → SMALLINT → BOOLEAN/VARCHAR) to reduce
   row padding; ~1.1M player rows per week.
 - **`(match_id, account_id)` primary key** prevents duplicate player rows when a week is re-ingested.
@@ -73,18 +73,19 @@ pandas · NumPy · PyArrow · Matplotlib · Seaborn · Pillow
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .                # installs dependencies + makes db_config / pipeline_common importable
 cp .env.example .env            # then fill in your PostgreSQL credentials
 
-python scripts/ingest_scripts/hero_ingest_deadlock.py        # hero metadata
-python scripts/ingest_scripts/ingest_dl_comm_api_parquet.py  # match data
-python scripts/query_transform.py                # weekly CSVs  (--start-date YYYY-MM-DD for a past week)
-python scripts/gen_visuals.py                    # all charts   (same --start-date flag)
+python scripts/run_pipeline.py                 # last completed week, end to end
+python scripts/run_pipeline.py --week 12       # a specific week
+python scripts/run_pipeline.py --week 12 --from transform   # resume after fixing a failed stage
 ```
 
-Weeks are counted from the ranked launch on 2026-07-30. Outputs land in `week<N>_analysis/`
-(CSVs) and `week<N>_analysis/graphs/` (PNGs). Raw data and game art are not committed;
-the ingest scripts recreate them.
+Each stage also runs on its own (`--week N` or `--date YYYY-MM-DD`). Week N is the N-th
+7-day block since the ranked launch on 2026-07-30, `[start, start + 7 days)` in UTC; running
+for a date processes the last week completed before it. Outputs land in `week<N>_analysis/`
+(CSVs, `period_meta.json`) and `week<N>_analysis/graphs/` (PNGs). Raw data and game art are
+not committed; the ingest scripts recreate them.
 
 ## Roadmap
 

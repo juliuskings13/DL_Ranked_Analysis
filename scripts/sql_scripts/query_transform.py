@@ -1,796 +1,267 @@
-import logging
+"""
+query_transform.py — weekly SQL transforms -> the CSV/Parquet files the chart scripts read.
+
+How it works
+    1. look the period up in patch_periods (written by the ingest)
+    2. build two temp tables on one connection, once:
+         wk_matches  complete matches of the period (12 players, 6 per side, one winner)
+         wk_players  their 12 player rows, joined to heroes
+       plus wk_type_counts (heroes of each archetype per team, zeros included)
+    3. run every export against those small tables, instead of re-filtering the full
+       match_player table 15 times
+    4. write <project>/week<N>_analysis/<name>.csv (+ period_meta.json)
+
+Using only complete matches keeps every count consistent (12 hero rows per match), which the
+charts rely on when they turn hero appearances into match counts.
+
+Usage:
+    python query_transform.py                       # last completed week
+    python query_transform.py --date 2026-10-26
+    python query_transform.py --week 12
+    python query_transform.py --period Patch_1_2    # any named row in patch_periods
+"""
+from __future__ import annotations
+
 import argparse
-from datetime import date, datetime
+import json
+import sys
+import time
 from pathlib import Path
-from typing import Any, Optional, Union
+
 import pandas as pd
-from sqlalchemy import TextClause, create_engine, text
-from db_config import PG_CONFIG                  
-from db_config import PG_CONFIG as DB_Params     
-from db_config import DB_URI   
 
-# script to run sql queries and transform output into readable csv files for the graphing scripts
+from pipeline_common import connect, parse_date, period_name, setup_logging, week_number
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s %(message)s"
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]       # scripts/sql_scripts/ -> project root
+MIN_DUO_GAMES = 1000          # duos below this are not exported (the chart also filters)
+TOP_COMPS = 20
+log = setup_logging()
 
-# ==========================================
-# CONFIGURATION
-# ==========================================
+# 5-minute bracket label from a duration in seconds; NULL under 20 minutes (same buckets as before)
+BRACKET_SQL = """CASE WHEN {d} < 1200 THEN NULL
+                      WHEN {d} >= 3600 THEN '60m+'
+                      ELSE (20 + 5 * (({d} / 60 - 20) / 5))::text || '-'
+                           || (25 + 5 * (({d} / 60 - 20) / 5))::text || 'm' END"""
 
-DB_URI = (
-    f"postgresql://{PG_CONFIG['user']}:{PG_CONFIG['password']}"
-    f"@{PG_CONFIG['host']}:{PG_CONFIG['port']}/{PG_CONFIG['dbname']}"
-)
+# =============================================================================
+# STAGING (temp tables, built once per run)
+# =============================================================================
+STAGING = [
+    """CREATE TEMP TABLE wk_matches AS
+       SELECT match_id, start_time, match_duration_s AS duration_s, winning_team, team0, team1
+       FROM match_hero_roster
+       WHERE start_time >= %(start)s AND (%(end)s::timestamptz IS NULL OR start_time < %(end)s)
+         AND cardinality(team0) = 6 AND cardinality(team1) = 6""",
+    """CREATE TEMP TABLE wk_players AS
+       SELECT mp.match_id, mp.team, mp.won, mp.hero_id, m.duration_s,
+              h.name AS hero_name, LOWER(h.hero_type) AS hero_type
+       FROM match_player mp
+       JOIN wk_matches m USING (match_id)
+       JOIN heroes h ON h.hero_id = mp.hero_id""",
+    "CREATE INDEX ON wk_players (match_id, team)",
+    # heroes of each archetype per team, INCLUDING zero (a team with no mystics has a row with n = 0)
+    """CREATE TEMP TABLE wk_type_counts AS
+       WITH teams AS (SELECT match_id, team, BOOL_OR(won) AS won FROM wk_players GROUP BY 1, 2),
+            types AS (SELECT DISTINCT hero_type FROM wk_players WHERE hero_type IS NOT NULL)
+       SELECT t.match_id, t.team, t.won, ty.hero_type, COUNT(p.hero_id) AS n
+       FROM teams t CROSS JOIN types ty
+       LEFT JOIN wk_players p ON p.match_id = t.match_id AND p.team = t.team AND p.hero_type = ty.hero_type
+       GROUP BY 1, 2, 3, 4""",
+    "ANALYZE wk_matches", "ANALYZE wk_players", "ANALYZE wk_type_counts",
+]
 
-# Global engine instance for connection pooling across query functions
-engine = create_engine(DB_URI)
+# =============================================================================
+# EXPORTS: name -> (SQL, formats). Column names are the contract with the chart scripts.
+# =============================================================================
+EXPORTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    # pick_rate_winrate_scatter, hero_wr_total_matches_split_column, balance_wr_distribution, ...
+    "hero_winrates": ("""
+        SELECT hero_name, hero_type, COUNT(*) AS total_matches, SUM(won::int) AS wins,
+               ROUND(100.0 * AVG(won::int), 2) AS winrate
+        FROM wk_players GROUP BY hero_name, hero_type ORDER BY winrate DESC""", ("csv",)),
 
-OUTPUT_DIR = Path.home() / "Projects" / "DL_ranked_analysis"
-# Ranked Launch Anchor Date: Thursday, July 30, 2026
-RANKED_START_DATE = date(2026, 7, 30)
+    # hero_duo_synergy_table: ALL duos with enough games (the chart ranks by lift, both directions)
+    "hero_duo_synergies": ("""
+        SELECT a.hero_name AS hero_name_a, b.hero_name AS hero_name_b,
+               COUNT(*) AS matches_together, SUM(a.won::int) AS wins,
+               ROUND(100.0 * AVG(a.won::int), 2) AS duo_winrate
+        FROM wk_players a
+        JOIN wk_players b ON b.match_id = a.match_id AND b.team = a.team AND a.hero_id < b.hero_id
+        GROUP BY a.hero_name, b.hero_name
+        HAVING COUNT(*) >= %(min_duo)s
+        ORDER BY duo_winrate DESC""", ("csv",)),
 
+    # archetype_stacking: one row per match per archetype, from the side with MORE of it.
+    # Ties (diff 0) are counted once, from the lexically first team — the old query counted them twice.
+    "hero_type_diff_winrate": ("""
+        SELECT a.hero_type, a.n - b.n AS type_differential, COUNT(*) AS match_frequency,
+               ROUND(100.0 * AVG(a.won::int), 2) AS winrate_of_surplus_team
+        FROM wk_type_counts a
+        JOIN wk_type_counts b ON b.match_id = a.match_id AND b.hero_type = a.hero_type AND b.team <> a.team
+        WHERE a.n > b.n OR (a.n = b.n AND a.team < b.team)
+        GROUP BY a.hero_type, a.n - b.n ORDER BY 1, 2""", ("csv",)),
 
-def get_current_week_number(target_date: Optional[date] = None) -> int:
-    """Calculates the 1-indexed ranked week number based on a 7-day cadence."""
-    if target_date is None:
-        target_date = date.today()
+    # matchup_bubble_chart: every (your count, enemy count) pair from BOTH sides of each match;
+    # split per archetype into <type>_comp_wr.csv below
+    "_type_matchups": ("""
+        SELECT a.hero_type, a.n AS t0_count, b.n AS t1_count, COUNT(*) AS total_matchups,
+               ROUND(100.0 * AVG(a.won::int), 2) AS t0_winrate
+        FROM wk_type_counts a
+        JOIN wk_type_counts b ON b.match_id = a.match_id AND b.hero_type = a.hero_type AND b.team <> a.team
+        GROUP BY 1, 2, 3 ORDER BY 1, total_matchups DESC""", ()),
 
-    days_elapsed = (target_date - RANKED_START_DATE).days
+    # match_duration (fallback buckets) + hero_strength_and_scaling column totals
+    "avg_duration": (f"""
+        SELECT {BRACKET_SQL.format(d='duration_s')} AS duration_bracket, COUNT(*) AS total_games
+        FROM wk_matches WHERE duration_s >= 1200
+        GROUP BY 1 ORDER BY MIN(duration_s)""", ("csv",)),
 
-    if days_elapsed < 0:
-        raise ValueError("Target date cannot be before Ranked Launch (2026-07-30).")
+    # match_duration: exact 1-minute histogram (quantiles, IQR, median split)
+    "match_duration_minutes": ("""
+        SELECT duration_s / 60 AS duration_min, COUNT(*) AS games
+        FROM wk_matches GROUP BY 1 ORDER BY 1""", ("csv",)),
 
-    # Integer division by 7 
-    return (days_elapsed // 7)
+    # hero_strength_and_scaling
+    "hero_duration_scaling": (f"""
+        SELECT hero_name, {BRACKET_SQL.format(d='duration_s')} AS duration_bracket,
+               COUNT(*) AS total_games, SUM(won::int) AS wins,
+               ROUND(100.0 * AVG(won::int), 2) AS winrate
+        FROM wk_players WHERE duration_s >= 1200
+        GROUP BY hero_name, 2 ORDER BY hero_name, MIN(duration_s)""", ("parquet",)),
 
+    # comp_uniqueness
+    "unique_comp_freq_match": ("""
+        WITH comps AS (SELECT team0 AS comp FROM wk_matches UNION ALL SELECT team1 FROM wk_matches),
+        freq AS (SELECT comp, COUNT(*) AS freq FROM comps GROUP BY comp),
+        bucketed AS (
+            SELECT freq,
+                   CASE WHEN freq = 1 THEN 1 WHEN freq < 5 THEN 2 WHEN freq < 10 THEN 3 WHEN freq < 20 THEN 4
+                        WHEN freq < 30 THEN 5 WHEN freq < 40 THEN 6 ELSE 7 END AS sort_order
+            FROM freq),
+        agg AS (SELECT sort_order, COUNT(*) AS unique_team_comps, SUM(freq) AS total_games_played
+                FROM bucketed GROUP BY sort_order)
+        SELECT (ARRAY['single-occurrence', '2 - 4 occurrences', '5 - 9 occurrences', '10 - 19 occurrences',
+                      '20 - 29 occurrences', '30 - 39 occurrences', '40+ occurrences'])[sort_order]
+                   AS frequency_bucket,
+               unique_team_comps, total_games_played,
+               SUM(unique_team_comps) OVER (ORDER BY sort_order DESC) AS cumulative_comps_n_plus,
+               SUM(total_games_played) OVER (ORDER BY sort_order DESC) AS cumulative_games_n_plus
+        FROM agg ORDER BY sort_order""", ("csv",)),
 
-def get_weekly_output_dir(week_num:int) -> Path:
-    """Generates and creates the weekly directory structure (e.g., ./week3_analysis)."""
-    weekly_dir = OUTPUT_DIR / f"week{week_num}_analysis"
-
-    # Create directory tree automatically
-    weekly_dir.mkdir(parents=True, exist_ok=True)
-    return weekly_dir
-
-
-def verify_tables_exist(required_tables: list[str]) -> bool:
-    check_query = text("""
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = ANY(:tables);
-    """)
-    with engine.connect() as conn:
-        result = conn.execute(check_query, {"tables": required_tables})
-        found_tables = {row[0] for row in result.fetchall()}
-
-    missing = set(required_tables) - found_tables
-    if missing:
-        logging.error(f"aborting etl, missing required tables: {missing}")
-        return False
-
-    logging.info("all required database tables verified")
-    return True
-
-
-def run_query(
-    query: Union[str, TextClause], params: Optional[dict[str, Any]] = None
-) -> pd.DataFrame:
-    """Executes a SQL query via SQLAlchemy connection and returns a pandas DataFrame."""
-    with engine.connect() as conn:
-        return pd.read_sql_query(query, conn, params=params)  # type: ignore
-
-
-# ==========================================
-# QUERY EXTRACTION METHODS
-# ==========================================
-
-
-def extract_hero_winrates(week_label: str) -> pd.DataFrame:
-    """Aggregates overall Hero win rates, pick rates, and match counts."""
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time
-            FROM patch_periods
-            WHERE period_name = :week_label
-        )
-        SELECT
-            h.name AS hero_name,
-            h.hero_type,
-            COUNT(mp.match_id) AS total_matches,
-            ROUND((COUNT(mp.match_id) FILTER (WHERE mp.won = TRUE)::NUMERIC / COUNT(mp.match_id)) * 100, 2) AS winrate
-        FROM match_player mp
-        JOIN heroes h ON mp.hero_id = h.hero_id
-        CROSS JOIN target_period tp
-        WHERE mp.start_time >= tp.start_time
-          AND (tp.end_time IS NULL OR mp.start_time <= tp.end_time)
-        GROUP BY h.name, h.hero_type
-        ORDER BY winrate DESC;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-
-def extract_hero_pairings(week_label: str) -> pd.DataFrame:
-    """Calculates win rates for the top 20 duo synergies for 50% wr and +5k matches using the table."""
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time
-            FROM patch_periods
-            WHERE period_name = :week_label
-        ),
-        period_matches AS (
-            SELECT 
-                mp.match_id,
-                mp.team,
-                mp.hero_id,
-                mp.won
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-        ),
-        duo_pairs AS (
-            SELECT 
-                m1.hero_id AS hero_a,
-                m2.hero_id AS hero_b,
-                m1.won
-            FROM period_matches m1
-            JOIN period_matches m2 
-              ON m1.match_id = m2.match_id 
-             AND m1.team = m2.team 
-             AND m1.hero_id < m2.hero_id
-        ),
-        duo_winrates AS (
-            SELECT 
-                dp.hero_a,
-                dp.hero_b,
-                COUNT(*) AS matches_together,
-                COUNT(*) FILTER (WHERE dp.won = TRUE) AS wins_together,
-                ROUND(
-                    (COUNT(*) FILTER (WHERE dp.won = TRUE)::NUMERIC / COUNT(*)) * 100, 2
-                ) AS duo_win_rate
-            FROM duo_pairs dp
-            GROUP BY dp.hero_a, dp.hero_b
-            HAVING COUNT(*) >= 20
-        )
-        SELECT 
-            h1.name AS hero_name_a,
-            h2.name AS hero_name_b,
-            dw.matches_together,
-            dw.duo_win_rate AS duo_winrate
-        FROM duo_winrates dw
-        JOIN heroes h1 ON dw.hero_a = h1.hero_id
-        JOIN heroes h2 ON dw.hero_b = h2.hero_id
-        WHERE dw.duo_win_rate >= 50 AND dw.matches_together >= 5000
-        ORDER BY dw.duo_win_rate DESC
-        LIMIT 20;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-
-def extract_global_presence_winrate(week_label: str) -> pd.DataFrame:
-    """Extracts hero's global presence and winrate."""
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        week_meta AS (
-            SELECT (COUNT(*)::NUMERIC / 12) AS total_games
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-        ),
-        period_players AS (
-            SELECT mp.match_id, mp.hero_id, mp.won
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-        )
-        SELECT
-            h.name AS hero_name,
-            ROUND((COUNT(pp.match_id)::NUMERIC / wm.total_games) * 100, 2) AS global_presence,
-            ROUND((COUNT(pp.match_id) FILTER (WHERE pp.won = TRUE)::NUMERIC / wm.total_games) * 100, 2) AS global_winrate
-        FROM period_players pp
-        CROSS JOIN week_meta wm
-        JOIN heroes h ON pp.hero_id = h.hero_id
-        GROUP BY h.name, wm.total_games
-        ORDER BY global_presence DESC;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-
-def extract_unique_comp_freq_match(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        team_comps AS (
-            SELECT m.team0 AS comp
-            FROM match_hero_roster m
-            JOIN target_period tp 
-              ON m.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-            
+    # most_freq_comps
+    "top_20_freq_comps": ("""
+        WITH sides AS (
+            SELECT team0 AS comp, LOWER(winning_team) = 'team0' AS won FROM wk_matches
             UNION ALL
-            
-            SELECT m.team1 AS comp
-            FROM match_hero_roster m
-            JOIN target_period tp 
-              ON m.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        ),
-        comp_frequencies AS (
-            SELECT comp, COUNT(*) AS freq
-            FROM team_comps
-            GROUP BY comp
-        ),
-        bucketed_comps AS (
-            SELECT 
-                freq,
-                CASE 
-                    WHEN freq = 1 THEN 'single-occurrence'
-                    WHEN freq BETWEEN 2 AND 4 THEN '2 - 4 occurrences'
-                    WHEN freq BETWEEN 5 AND 9 THEN '5 - 9 occurrences'
-                    WHEN freq BETWEEN 10 AND 19 THEN '10 - 19 occurrences'
-                    WHEN freq BETWEEN 20 AND 29 THEN '20 - 29 occurrences'
-                    WHEN freq BETWEEN 30 AND 39 THEN '30 - 39 occurrences'
-                    WHEN freq >= 40 THEN '40+ occurrences'
-                END AS frequency_bucket,
-                CASE 
-                    WHEN freq = 1 THEN 1
-                    WHEN freq BETWEEN 2 AND 4 THEN 2
-                    WHEN freq BETWEEN 5 AND 9 THEN 3
-                    WHEN freq BETWEEN 10 AND 19 THEN 4
-                    WHEN freq BETWEEN 20 AND 29 THEN 5
-                    WHEN freq BETWEEN 30 AND 39 THEN 6
-                    WHEN freq >= 40 THEN 7
-                END AS sort_order
-            FROM comp_frequencies
-        ),
-        bucket_aggregates AS (
-            SELECT 
-                frequency_bucket,
-                sort_order,
-                COUNT(*) AS unique_team_comps,
-                SUM(freq) AS total_games_played
-            FROM bucketed_comps
-            GROUP BY frequency_bucket, sort_order
-        )
-        SELECT 
-            frequency_bucket,
-            unique_team_comps,
-            total_games_played,
-            SUM(unique_team_comps) OVER (
-                ORDER BY sort_order DESC 
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) AS cumulative_comps_N_plus,
-            SUM(total_games_played) OVER (
-                ORDER BY sort_order DESC 
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) AS cumulative_games_N_plus
-        FROM bucket_aggregates
-        ORDER BY sort_order ASC;
-    """)
-    return run_query(query, params={"week_label": week_label})
+            SELECT team1, LOWER(winning_team) = 'team1' FROM wk_matches),
+        top AS (SELECT comp, COUNT(*) AS total_matches, ROUND(100.0 * AVG(won::int), 2) AS winrate
+                FROM sides GROUP BY comp ORDER BY total_matches DESC, winrate DESC LIMIT %(top_comps)s)
+        SELECT (SELECT STRING_AGG(h.name, ', ' ORDER BY h.name)
+                FROM UNNEST(top.comp) AS u(hero_id) JOIN heroes h ON h.hero_id = u.hero_id) AS comp_names,
+               total_matches, winrate
+        FROM top ORDER BY total_matches DESC, winrate DESC""", ("csv",)),
+}
 
 
-def extract_top_20_freq_comps(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        all_teams AS (
-            SELECT m.team0 AS comp_ids, CASE WHEN LOWER(m.winning_team) = 'team0' THEN 1 ELSE 0 END AS won
-            FROM match_hero_roster m
-            JOIN target_period tp ON m.start_time >= tp.start_time AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-            
-            UNION ALL
-            
-            SELECT m.team1 AS comp_ids, CASE WHEN LOWER(m.winning_team) = 'team1' THEN 1 ELSE 0 END AS won
-            FROM match_hero_roster m
-            JOIN target_period tp ON m.start_time >= tp.start_time AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        ),
-        top_comps AS (
-            SELECT 
-                comp_ids,
-                COUNT(*) AS total_matches,
-                ROUND((SUM(won)::NUMERIC / COUNT(*)) * 100, 2) AS winrate
-            FROM all_teams
-            GROUP BY comp_ids
-            ORDER BY total_matches DESC
-            LIMIT 20
-        )
-        SELECT 
-            (
-                SELECT STRING_AGG(h.name, ', ' ORDER BY h.name)
-                FROM UNNEST(tc.comp_ids) AS u(hero_id)
-                JOIN heroes h ON h.hero_id = u.hero_id
-            ) AS comp_names,
-            tc.total_matches,
-            tc.winrate
-        FROM top_comps tc
-        ORDER BY tc.total_matches DESC;
-    """)
-    return run_query(query, params={"week_label": week_label})
+# =============================================================================
+# RUN
+# =============================================================================
+def resolve_period(cur, name: str):
+    cur.execute("SELECT start_time, end_time FROM patch_periods WHERE period_name = %s", (name,))
+    row = cur.fetchone()
+    if not row:
+        raise SystemExit(f"'{name}' is not in patch_periods — run the ingest for that week first.")
+    return row
 
 
-def extract_top_20_freq_win_comps(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        all_teams AS (
-            SELECT m.team0 AS comp_ids, CASE WHEN LOWER(m.winning_team) = 'team0' THEN 1 ELSE 0 END AS won
-            FROM match_hero_roster m
-            JOIN target_period tp ON m.start_time >= tp.start_time AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-            
-            UNION ALL
-            
-            SELECT m.team1 AS comp_ids, CASE WHEN LOWER(m.winning_team) = 'team1' THEN 1 ELSE 0 END AS won
-            FROM match_hero_roster m
-            JOIN target_period tp ON m.start_time >= tp.start_time AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        ),
-        top_comps AS (
-            SELECT 
-                comp_ids,
-                COUNT(*) AS total_matches,
-                ROUND((SUM(won)::NUMERIC / COUNT(*)) * 100, 2) AS winrate
-            FROM all_teams
-            GROUP BY comp_ids
-            ORDER BY total_matches DESC
-        )
-        SELECT 
-            (
-                SELECT STRING_AGG(h.name, ', ' ORDER BY h.name)
-                FROM UNNEST(tc.comp_ids) AS u(hero_id)
-                JOIN heroes h ON h.hero_id = u.hero_id
-            ) AS comp_names,
-            tc.total_matches,
-            tc.winrate
-        FROM top_comps tc
-        WHERE winrate > 50
-        ORDER BY total_matches DESC
-        LIMIT 20;
-    """)
-    return run_query(query, params={"week_label": week_label})
+def query_df(conn, sql: str, params: dict) -> pd.DataFrame:
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        # coerce_float: NUMERIC results (e.g. ROUND) arrive as Decimal; parquet would keep them as
+        # decimals and the charts' float math would fail
+        return pd.DataFrame.from_records(cur.fetchall(), columns=[c.name for c in cur.description],
+                                         coerce_float=True)
 
 
-def extract_top_20_freq_lose_comps(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        all_teams AS (
-            SELECT m.team0 AS comp_ids, CASE WHEN LOWER(m.winning_team) = 'team0' THEN 1 ELSE 0 END AS won
-            FROM match_hero_roster m
-            JOIN target_period tp ON m.start_time >= tp.start_time AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-            
-            UNION ALL
-            
-            SELECT m.team1 AS comp_ids, CASE WHEN LOWER(m.winning_team) = 'team1' THEN 1 ELSE 0 END AS won
-            FROM match_hero_roster m
-            JOIN target_period tp ON m.start_time >= tp.start_time AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        ),
-        top_comps AS (
-            SELECT 
-                comp_ids,
-                COUNT(*) AS total_matches,
-                ROUND((SUM(won)::NUMERIC / COUNT(*)) * 100, 2) AS winrate
-            FROM all_teams
-            GROUP BY comp_ids
-            ORDER BY total_matches DESC
-        )
-        SELECT 
-            (
-                SELECT STRING_AGG(h.name, ', ' ORDER BY h.name)
-                FROM UNNEST(tc.comp_ids) AS u(hero_id)
-                JOIN heroes h ON h.hero_id = u.hero_id
-            ) AS comp_names,
-            tc.total_matches,
-            tc.winrate
-        FROM top_comps tc
-        WHERE winrate < 50
-        ORDER BY total_matches DESC
-        LIMIT 20;
-    """)
-    return run_query(query, params={"week_label": week_label})
+def write(df: pd.DataFrame, out_dir: Path, name: str, formats: tuple[str, ...]) -> None:
+    for fmt in formats:
+        path = out_dir / f"{name}.{fmt}"
+        df.to_csv(path, index=False) if fmt == "csv" else df.to_parquet(path, index=False)
+        log.info("  wrote %-34s %s rows", path.name, f"{len(df):,}")
 
 
-def extract_hero_freq_top_comps(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        team_comps AS (
-            SELECT 
-                mp.match_id, 
-                mp.team,
-                ARRAY_AGG(mp.hero_id ORDER BY mp.hero_id) AS comp_ids
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-            GROUP BY mp.match_id, mp.team
-        ), 
-        top_comps AS (
-            SELECT
-                comp_ids,
-                COUNT(*) AS total_matches
-            FROM team_comps
-            GROUP BY comp_ids
-            ORDER BY total_matches DESC 
-            LIMIT 20
-        )
-        SELECT 
-            h.name AS hero_name,
-            h.hero_type,
-            COUNT(*) AS frequency
-        FROM top_comps tc
-        CROSS JOIN LATERAL UNNEST(tc.comp_ids) AS unnested(hero_id)
-        JOIN heroes h ON h.hero_id = unnested.hero_id
-        GROUP BY h.hero_id, h.name, h.hero_type
-        ORDER BY frequency DESC;
-    """)
-    return run_query(query, params={"week_label": week_label})
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Run the weekly SQL transforms")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--date", "--start-date", dest="date", help="YYYY-MM-DD (default today): uses the last completed week")
+    g.add_argument("--week", type=int)
+    g.add_argument("--period", help="any period_name in patch_periods, e.g. a patch window")
+    ap.add_argument("--out-dir", help="override the output folder")
+    args = ap.parse_args()
 
+    if args.period:
+        name, folder = args.period, args.period.lower()
+    else:
+        week = args.week or week_number(parse_date(args.date))
+        name, folder = period_name(week), f"week{week}_analysis"
+    out_dir = Path(args.out_dir) if args.out_dir else PROJECT_ROOT / folder
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-def extract_hero_freq_top_win_comps(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        team_comps AS (
-            SELECT 
-                mp.match_id, 
-                mp.team,
-                bool_or(mp.won) AS won,
-                ARRAY_AGG(mp.hero_id ORDER BY mp.hero_id) AS comp_ids
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-            GROUP BY mp.match_id, mp.team
-        ), 
-        top_comps AS (
-            SELECT
-                comp_ids,
-                COUNT(*) AS total_matches
-            FROM team_comps
-            GROUP BY comp_ids
-            HAVING (COUNT(*) FILTER (WHERE won = TRUE)::NUMERIC / COUNT(*)) > 0.50
-            ORDER BY total_matches DESC 
-            LIMIT 20
-        )
-        SELECT 
-            h.name AS hero_name,
-            h.hero_type,
-            COUNT(*) AS frequency
-        FROM top_comps tc
-        CROSS JOIN LATERAL UNNEST(tc.comp_ids) AS unnested(hero_id)
-        JOIN heroes h ON h.hero_id = unnested.hero_id
-        GROUP BY h.hero_id, h.name, h.hero_type
-        ORDER BY frequency DESC;
-    """)
-    return run_query(query, params={"week_label": week_label})
+    conn = connect()
+    failed = []
+    try:
+        with conn.cursor() as cur:
+            start, end = resolve_period(cur, name)
+            log.info("%s: %s -> %s  =>  %s", name, start, end or "open", out_dir)
+            params = {"start": start, "end": end, "min_duo": MIN_DUO_GAMES, "top_comps": TOP_COMPS}
+            t0 = time.time()
+            for sql in STAGING:
+                cur.execute(sql, params)
+            cur.execute("SELECT COUNT(*) FROM wk_matches")
+            n_matches = cur.fetchone()[0]
+            cur.execute("""SELECT COUNT(*) FROM match_player WHERE start_time >= %(start)s
+                           AND (%(end)s::timestamptz IS NULL OR start_time < %(end)s)""", params)
+            n_rows_all = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM wk_players")
+            n_players = cur.fetchone()[0]
+            log.info("Staged %s complete matches (%s player rows) in %.1fs", f"{n_matches:,}",
+                     f"{n_players:,}", time.time() - t0)
+            if n_matches == 0:
+                log.error("No complete matches in %s — nothing to export.", name)
+                return 1
+            if n_players != 12 * n_matches:
+                log.warning("%s player rows dropped by the heroes join: run hero_ingest_deadlock.py",
+                            f"{12 * n_matches - n_players:,}")
+        conn.commit()          # keep the temp tables: a failed export's rollback must not drop them
 
+        for export, (sql, formats) in EXPORTS.items():
+            try:
+                t = time.time()
+                df = query_df(conn, sql, params)
+                log.info("%-26s %.2fs", export, time.time() - t)
+                if export == "_type_matchups":
+                    for htype, g_ in df.groupby("hero_type"):
+                        write(g_.drop(columns="hero_type"), out_dir, f"{htype}_comp_wr", ("csv",))
+                else:
+                    write(df, out_dir, export, formats)
+            except Exception:
+                log.exception("export %s failed", export)
+                conn.rollback()
+                failed.append(export)
 
-def extract_hero_freq_top_lose_comps(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        team_comps AS (
-            SELECT 
-                mp.match_id, 
-                mp.team,
-                bool_or(mp.won) AS won,
-                ARRAY_AGG(mp.hero_id ORDER BY mp.hero_id) AS comp_ids
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-            GROUP BY mp.match_id, mp.team
-        ), 
-        top_comps AS (
-            SELECT
-                comp_ids,
-                COUNT(*) AS total_matches
-            FROM team_comps
-            GROUP BY comp_ids
-            HAVING (COUNT(*) FILTER (WHERE won = TRUE)::NUMERIC / COUNT(*)) < 0.50
-            ORDER BY total_matches DESC 
-            LIMIT 20
-        )
-        SELECT 
-            h.name AS hero_name,
-            h.hero_type,
-            COUNT(*) AS frequency
-        FROM top_comps tc
-        CROSS JOIN LATERAL UNNEST(tc.comp_ids) AS unnested(hero_id)
-        JOIN heroes h ON h.hero_id = unnested.hero_id
-        GROUP BY h.hero_id, h.name, h.hero_type
-        ORDER BY frequency DESC;
-    """)
-    return run_query(query, params={"week_label": week_label})
+        meta = {"period": name, "start": str(start), "end": str(end) if end else None,
+                "complete_matches": n_matches, "player_rows_in_period": n_rows_all,
+                "incomplete_rows_excluded": n_rows_all - 12 * n_matches}
+        (out_dir / "period_meta.json").write_text(json.dumps(meta, indent=2))
+    finally:
+        conn.close()
 
-
-def extract_hero_type_diff_winrate(week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time FROM patch_periods WHERE period_name = :week_label
-        ),
-        period_matches AS (
-            SELECT mp.*
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-        ),
-        team_type_counts AS (
-            SELECT
-                pm.match_id,
-                pm.team,
-                pm.won,
-                h.hero_type,
-                COUNT(pm.hero_id) AS type_count
-            FROM period_matches pm
-            JOIN heroes h ON pm.hero_id = h.hero_id
-            GROUP BY pm.match_id, pm.team, pm.won, h.hero_type
-        ),
-        differentials AS (
-            SELECT
-                t1.match_id,
-                t1.hero_type,
-                t1.won AS surplus_team_won,
-                t1.type_count - COALESCE(t2.type_count, 0) AS diff
-            FROM team_type_counts t1
-            LEFT JOIN team_type_counts t2 
-                ON t1.match_id = t2.match_id 
-                AND t1.hero_type = t2.hero_type 
-                AND t1.team != t2.team
-            WHERE t1.type_count >= COALESCE(t2.type_count, 0)
-               OR (t1.type_count = COALESCE(t2.type_count, 0) AND t1.team = 'team0')
-        )
-        SELECT 
-            hero_type,
-            diff AS type_differential,
-            COUNT(*) AS match_frequency,
-            ROUND((COUNT(*) FILTER (WHERE surplus_team_won)::NUMERIC / COUNT(*)) * 100, 2) AS winrate_of_surplus_team
-        FROM differentials
-        GROUP BY hero_type, diff
-        ORDER BY hero_type, diff;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-
-def extract_herotype_comp_wr(hero_type: str, week_label: str) -> pd.DataFrame:
-    query = text("""
-        WITH match_counts AS (
-            SELECT 
-                m.match_id,
-                m.winning_team,
-                (
-                    SELECT COUNT(*) 
-                    FROM unnest(m.team0) AS t0_id
-                    JOIN heroes h0 ON h0.hero_id = t0_id
-                    WHERE LOWER(h0.hero_type) = :hero_type
-                ) AS team0_type_count,
-                (
-                    SELECT COUNT(*) 
-                    FROM unnest(m.team1) AS t1_id
-                    JOIN heroes h1 ON h1.hero_id = t1_id
-                    WHERE LOWER(h1.hero_type) = :hero_type
-                ) AS team1_type_count
-            FROM match_hero_roster m
-            JOIN patch_periods tp ON tp.period_name = :week_label
-              AND m.start_time >= tp.start_time 
-              AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        ),
-        exact_matchups AS (
-            SELECT 
-                team0_type_count AS t0_count,
-                team1_type_count AS t1_count,
-                CASE WHEN LOWER(winning_team) = 'team0' THEN 1 ELSE 0 END AS win
-            FROM match_counts
-            UNION ALL
-            SELECT 
-                team1_type_count AS t0_count,
-                team0_type_count AS t1_count,
-                CASE WHEN LOWER(winning_team) = 'team1' THEN 1 ELSE 0 END AS win
-            FROM match_counts
-        )
-        SELECT 
-            t0_count,
-            t1_count,
-            COUNT(*) AS total_matchups,
-            ROUND(AVG(win) * 100, 2) AS t0_winrate
-        FROM exact_matchups
-        GROUP BY t0_count, t1_count
-        ORDER BY total_matchups DESC, t0_winrate DESC;
-    """)
-    ht = hero_type.lower()
-    return run_query(query, params={"hero_type": ht, "week_label": week_label})
-
-
-def extract_avg_duration(week_label: str) -> pd.DataFrame:
-    """Segments match duration into 5-min buckets to analyze avg match duration."""
-    query = text("""
-        SELECT 
-            CASE WIDTH_BUCKET(m.match_duration_s / 60, 20, 60, 8)
-                WHEN 1 THEN '20-25m'
-                WHEN 2 THEN '25-30m'
-                WHEN 3 THEN '30-35m'
-                WHEN 4 THEN '35-40m'
-                WHEN 5 THEN '40-45m'
-                WHEN 6 THEN '45-50m'
-                WHEN 7 THEN '50-55m'
-                WHEN 8 THEN '55-60m'
-                ELSE '60m+'
-            END AS duration_bracket,
-            COUNT(*) AS total_games
-        FROM match_hero_roster m
-        JOIN patch_periods tp ON tp.period_name = :week_label
-          AND m.start_time >= tp.start_time 
-          AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        WHERE m.match_duration_s >= 1200
-        GROUP BY duration_bracket
-        ORDER BY duration_bracket;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-def extract_duration_minutes(week_label: str) -> pd.DataFrame:
-    """Matches per whole minute of length (1-minute bins, no 20-minute floor).
-    Feeds match_duration.py and the IQR-based early/late cut-offs in chart_stats.py."""
-    query = text("""
-        SELECT
-            (m.match_duration_s / 60) AS duration_min,   -- integer division: 37:42 -> 37
-            COUNT(*) AS games
-        FROM match_hero_roster m
-        JOIN patch_periods tp ON tp.period_name = :week_label
-          AND m.start_time >= tp.start_time
-          AND (tp.end_time IS NULL OR m.start_time < tp.end_time)
-        GROUP BY duration_min
-        ORDER BY duration_min;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-
-
-def extract_duration_vs_winrate(week_label: str) -> pd.DataFrame:
-    """Segments match duration into 5-minute buckets to analyze win rates over time."""
-    query = text("""
-        WITH target_period AS (
-            SELECT start_time, end_time
-            FROM patch_periods
-            WHERE period_name = :week_label
-        ),
-        period_matches AS (
-            SELECT 
-                mp.match_id,
-                mp.team,
-                mp.hero_id,
-                mp.duration_s,
-                mp.won
-            FROM match_player mp
-            JOIN target_period tp 
-              ON mp.start_time >= tp.start_time 
-             AND (tp.end_time IS NULL OR mp.start_time < tp.end_time)
-        )
-        SELECT 
-            h."name" AS hero_name,
-            CASE WIDTH_BUCKET(pm.duration_s / 60, 20, 60, 8)
-                WHEN 1 THEN '20-25m'
-                WHEN 2 THEN '25-30m'
-                WHEN 3 THEN '30-35m'
-                WHEN 4 THEN '35-40m'
-                WHEN 5 THEN '40-45m'
-                WHEN 6 THEN '45-50m'
-                WHEN 7 THEN '50-55m'
-                WHEN 8 THEN '55-60m'
-                ELSE '60m+'
-            END AS duration_bracket,
-            COUNT(*) AS total_games,
-            ROUND(
-                (COUNT(*) FILTER (WHERE won = TRUE)::NUMERIC / COUNT(*)) * 100, 2
-            ) AS winrate
-        FROM period_matches pm
-        JOIN heroes h ON pm.hero_id = h.hero_id
-        WHERE pm.duration_s >= 1200
-        GROUP BY hero_name, duration_bracket
-        ORDER BY hero_name, duration_bracket;
-    """)
-    return run_query(query, params={"week_label": week_label})
-
-
-# ==========================================
-# 3. OUTPUT FORMATTERS / EXPORTERS
-# ==========================================
-
-def export_dataset(
-    df: pd.DataFrame,
-    filename: str,
-    output_dir: Path,
-    formats: list[str] = ["csv", "parquet"],
-):
-    """Writes DataFrames out to disk in specified file formats."""
-    base_path = output_dir / filename
-
-    if "csv" in formats:
-        csv_path = base_path.with_suffix(".csv")
-        df.to_csv(csv_path, index=False)
-        logging.info(f"Saved CSV     -> {csv_path}")
-
-    if "parquet" in formats:
-        parquet_path = base_path.with_suffix(".parquet")
-        df.to_parquet(parquet_path, index=False)
-        logging.info(f"Saved Parquet -> {parquet_path}")
-
-
-# ==========================================
-# 4. ETL RUNNER
-# ==========================================
-def run_etl(target_date: Optional[date] = None):
-    logging.info("Starting SQL Query ETL pipeline...")
-
-    # Calculate target week dynamically from target_date
-    week_num = get_current_week_number(target_date)
-    week_label = f"Week_{week_num}"
-    logging.info(f"Targeting pipeline for {week_label} (Date: {target_date or date.today()})")
-
-    required_tables = ["match_player", "heroes", "match_hero_roster", "patch_periods"]
-    if not verify_tables_exist(required_tables):
-        return
-
-    # Pass target week/label into directory resolver
-    curr_week_output_dir = get_weekly_output_dir(week_num=week_num)
-    logging.info(f"Output directory set to: {curr_week_output_dir}")
-
-    # Pass week_label/week_num to extraction functions if needed
-    queries_to_run = [
-        ("hero_winrates", lambda: extract_hero_winrates(week_label), ["csv"]),
-        ("hero_duo_synergies", lambda: extract_hero_pairings(week_label), ["csv"]),
-        ("global_presence_winrate", lambda: extract_global_presence_winrate(week_label), ["csv"]),
-        ("unique_comp_freq_match", lambda: extract_unique_comp_freq_match(week_label), ["csv"]),
-        ("top_20_freq_comps", lambda: extract_top_20_freq_comps(week_label), ["csv"]),
-        ("top_20_freq_win_comps", lambda: extract_top_20_freq_win_comps(week_label), ["csv"]),
-        ("top_20_freq_lose_comps", lambda: extract_top_20_freq_lose_comps(week_label), ["csv"]),
-        ("hero_freq_top_comps", lambda: extract_hero_freq_top_comps(week_label), ["csv"]),
-        ("hero_freq_top_win_comps", lambda: extract_hero_freq_top_win_comps(week_label), ["csv"]),
-        ("hero_freq_top_lose_comps", lambda: extract_hero_freq_top_lose_comps(week_label), ["csv"]),
-        ("hero_type_diff_winrate", lambda: extract_hero_type_diff_winrate(week_label), ["csv"]),
-        ("brawler_comp_wr", lambda: extract_herotype_comp_wr("brawler", week_label), ["csv"]),
-        ("mystic_comp_wr", lambda: extract_herotype_comp_wr("mystic", week_label), ["csv"]),
-        ("marksman_comp_wr", lambda: extract_herotype_comp_wr("marksman", week_label), ["csv"]),
-        ("assassin_comp_wr", lambda: extract_herotype_comp_wr("assassin", week_label), ["csv"]),
-        ("avg_duration", lambda: extract_avg_duration(week_label), ["csv"]),
-        ("match_duration_minutes", lambda: extract_duration_minutes(week_label), ["csv"]),
-        ("hero_duration_scaling", lambda: extract_duration_vs_winrate(week_label), ["parquet"]),
-    ]
-
-    for name, extract_fn, formats in queries_to_run:
-        logging.info(f"Running extract function: {name}...")
-        try:
-            df = extract_fn()
-            if df.empty:
-                logging.warning(f"Query {name} returned no rows. Skipping export.")
-                continue
-
-            export_dataset(df, filename=name, output_dir=curr_week_output_dir, formats=formats)
-        except Exception as e:
-            logging.error(f"Failed executing {name}: {e}")
-
-    logging.info("ETL pipeline completed successfully!")
+    if failed:
+        log.error("%s export(s) failed: %s", len(failed), ", ".join(failed))
+        return 1
+    log.info("All %s exports written to %s", len(EXPORTS), out_dir)
+    return 0
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SQL Query ETL Pipeline")
-    parser.add_argument("--start-date", type=str, default=None, help="YYYY-MM-DD target date")
-    args = parser.parse_args()
-
-    parsed_date = datetime.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
-    run_etl(target_date=parsed_date)
+    sys.exit(main())

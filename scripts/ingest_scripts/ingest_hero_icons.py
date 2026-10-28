@@ -1,87 +1,81 @@
-import json
-import os
+"""
+ingest_hero_icons.py — download hero image assets from the Deadlock API.
+
+Mirrors the API's folder structure under assets/icons/ (e.g. assets/icons/heroes/...).
+Files already on disk are skipped, so re-runs only fetch new heroes / new art. Downloads
+run in parallel. The chart icon folders (base_icons / critical_icons / gloat_icons) are
+separate and not touched here.
+
+Usage: python ingest_hero_icons.py [--force]
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
 import requests
 
-# --- 1. PATH SETUP ---
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+from pipeline_common import setup_logging
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]       # scripts/ingest_scripts/ -> project root
 ICONS_DIR = PROJECT_ROOT / "assets" / "icons"
-ICONS_DIR.mkdir(parents=True, exist_ok=True)
+ICONS_URL = "https://api.deadlock-api.com/v1/assets/icons"
+HEADERS = {"User-Agent": "Deadlock Analytics (personal project)"}
+log = setup_logging()
 
-BASE_URL = "https://api.deadlock-api.com/v1/assets/icons"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Deadlock Analytics Dev)"}
-SCHEMA_FILE = SCRIPT_DIR/ "icons_schema_results.json"
 
-# --- 2. HELPER FUNCTIONS ---
-def flatten_json(nested_json, current_path=""):
-    """Flattens the nested asset JSON mapping into a clean path:url dict."""
-    flat_map = {}
-    for key, value in nested_json.items():
-        if isinstance(value, dict):
-            flat_map.update(flatten_json(value, f"{current_path}{key}/"))
+def flatten(tree: dict, prefix: str = "") -> dict[str, str]:
+    """{'heroes': {'abrams': {'card': url}}} -> {'heroes/abrams/card': url}"""
+    out = {}
+    for k, v in tree.items():
+        if isinstance(v, dict):
+            out.update(flatten(v, f"{prefix}{k}/"))
         else:
-            flat_map[f"{current_path}{key}"] = value
-    return flat_map
+            out[f"{prefix}{k}"] = v
+    return out
 
-# --- 3. CORE LOGIC ---
-def download_all_assets():
-    print(f"Fetching nested asset map from: {BASE_URL}")
-    try:
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Network error: {e}")
-        return
 
-    icons_data = resp.json()
+def download(session: requests.Session, url: str, dest: Path) -> None:
+    res = session.get(url, timeout=30)
+    res.raise_for_status()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp.write_bytes(res.content)
+    tmp.replace(dest)                     # atomic: a crash never leaves a half-written image
 
-    # Save the master schema file into assets/icons/ for records
-    with open(SCHEMA_FILE, "w", encoding="utf-8") as f:
-        json.dump(icons_data, f, indent=2)
-    print(f"Master schema saved to: {SCHEMA_FILE}")
 
-    # -------------------------------------------------------------
-    # OPTION A: Download EVERYTHING (Heroes, Items, UI, etc.)
-    # -------------------------------------------------------------
-    # print("\nFlattening the entire asset map...")
-    # icon_map = flatten_json(icons_data)
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--force", action="store_true", help="re-download files that already exist")
+    args = ap.parse_args()
 
-    # -------------------------------------------------------------
-    # OPTION B: Download ONLY Hero Assets (What the code currently does)
-    # -------------------------------------------------------------
-    print("\nFlattening hero asset map...")
-    heroes_subtree = icons_data.get("heroes", {})
-    icon_map = flatten_json(heroes_subtree, current_path="heroes/")
-    # -------------------------------------------------------------
+    res = requests.get(ICONS_URL, headers=HEADERS, timeout=30)
+    res.raise_for_status()
+    assets = flatten(res.json().get("heroes", {}), "heroes/")
+    jobs = {path: url for path, url in assets.items()
+            if isinstance(url, str) and url.endswith((".png", ".svg"))}
+    # the API key keeps its extension in the URL, not always in the path
+    todo = [(url, ICONS_DIR / (path if Path(path).suffix else path + Path(url).suffix))
+            for path, url in jobs.items()]
+    if not args.force:
+        todo = [(u, d) for u, d in todo if not d.exists()]
+    log.info("%s hero assets listed, %s to download", len(jobs), len(todo))
 
-    download_count = 0
-    
-    for relative_path, url in icon_map.items():
-        # Target path mirrors the API structure (e.g., assets/icons/heroes/guns/shotgun.svg)
-        destination_path = ICONS_DIR / relative_path
-        
-        # Filter: Only download images, skipping empty/invalid entries
-        if not isinstance(url, str) or not (url.endswith(".png") or url.endswith(".svg")):
-            continue
-            
-        # Optional filter from your script: target specific naming conventions
-        #if not ("square" in relative_path or "hud" in relative_path or "selection" in relative_path or "_" not in relative_path):
-           # continue
+    failed = 0
+    with requests.Session() as s, ThreadPoolExecutor(max_workers=8) as pool:
+        s.headers.update(HEADERS)
+        futures = {pool.submit(download, s, u, d): d for u, d in todo}
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except requests.RequestException as e:
+                failed += 1
+                log.warning("failed %s: %s", futures[f].relative_to(ICONS_DIR), e)
+    log.info("Downloaded %s, failed %s -> %s", len(todo) - failed, failed, ICONS_DIR)
+    return 1 if failed else 0
 
-        # Ensure nested subdirectories exist
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        print(f"Downloading: {relative_path}")
-        try:
-            img_data = requests.get(url, headers=HEADERS, timeout=5).content
-            with open(destination_path, "wb") as handler:
-                handler.write(img_data)
-            download_count += 1
-        except Exception as e:
-            print(f"Failed downloading {relative_path}: {e}")
-
-    print(f"\n🎉 Success! Downloaded {download_count} assets into {ICONS_DIR}")
 
 if __name__ == "__main__":
-    download_all_assets()
+    sys.exit(main())

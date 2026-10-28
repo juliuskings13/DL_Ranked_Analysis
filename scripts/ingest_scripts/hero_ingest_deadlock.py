@@ -1,88 +1,62 @@
-import json
-from psycopg2.extras import execute_values
-import psycopg2
-import requests
-from db_config import PG_CONFIG                  
-from db_config import PG_CONFIG as DB_Params     
-from db_config import DB_URI   
-
-
-#Database config
-base_api_url = "https://api.deadlock-api.com/v1/assets"
-
-# Schema setup
-
-create_tables_sql = """
-
-create table if not exists heroes (
-	hero_id int primary key,
-	name varchar(100) not null,
-	class_name varchar(100),
-	hero_type varchar(50),
-	complexity int
-);
 """
+hero_ingest_deadlock.py — sync the heroes dimension table from the Deadlock assets API.
 
-def setup_database(conn):
-	""" ensure destination tables exist before ingesting data"""
-	with conn.cursor() as cursor:
-		cursor.execute(create_tables_sql)
-	conn.commit()
-	print("Schema verified/created successfully")
+Run it whenever a hero is added or renamed. Every analysis query joins on heroes, so a
+hero missing here is silently dropped from all results (validate_week.py checks for this).
+hero_type is stored lower-case so queries never need LOWER().
+
+Usage: python hero_ingest_deadlock.py
+"""
+from __future__ import annotations
+
+import sys
+
+import requests
+
+from pipeline_common import connect, copy_upsert, ensure_schema, setup_logging
+
+HEROES_URL = "https://api.deadlock-api.com/v1/assets/heroes"
+log = setup_logging()
 
 
-# Sync hero table
+def fetch_heroes() -> list[tuple]:
+    res = requests.get(HEROES_URL, timeout=30)
+    res.raise_for_status()
+    rows = []
+    for h in res.json():
+        if h.get("id") is None:
+            continue
+        rows.append((h["id"], h.get("name") or f"Hero_{h['id']}", h.get("class_name"), h.get("hero_type"),
+                     h.get("complexity")))
+    return rows
 
-def sync_heroes(conn):
-	"fetch hero dictionary from API and insert into postgres"
-	print("syncing hero metadata...")
 
-	try:
-		res = requests.get(f"{base_api_url}/heroes", timeout = 10)
-		res.raise_for_status()
-		heroes_data = res.json()
-	except requests.RequestException as e:
-		print(f"failed to fetch hero assets: {e}")
-		return
+def normalize(rows: list[tuple]) -> list[tuple]:
+    """Lower-case, trimmed hero_type (None if blank), applied right before writing."""
+    return [(i, name, cls, (t or "").strip().lower() or None, cx) for i, name, cls, t, cx in rows]
 
-	hero_rows = []
-	for h in heroes_data:
-		hero_id = h.get("id");
 
-		if hero_id is not None:
-			class_name = h.get("class_name")
-			name = h.get("name") or f"Hero_{hero_id}"
-			hero_type = h.get("hero_type")
-			complexity = h.get("complexity")
+def main() -> int:
+    try:
+        rows = normalize(fetch_heroes())
+    except requests.RequestException:
+        log.exception("Could not fetch heroes from %s", HEROES_URL)
+        return 1
+    conn = connect()
+    try:
+        ensure_schema(conn)
+        copy_upsert(conn, "heroes", ["hero_id", "name", "class_name", "hero_type", "complexity"], rows,
+                    key=["hero_id"],
+                    conflict="DO UPDATE SET name = EXCLUDED.name, class_name = EXCLUDED.class_name, "
+                             "hero_type = EXCLUDED.hero_type, complexity = EXCLUDED.complexity")
+        missing_type = [r[1] for r in rows if r[3] is None]
+        log.info("Synced %s heroes", len(rows))
+        if missing_type:
+            log.warning("No hero_type for: %s (they won't appear in archetype charts)", ", ".join(missing_type))
+        return 0
+    finally:
+        conn.close()
 
-			hero_rows.append(
-				(hero_id, class_name, name, hero_type, complexity)
-				)
-
-	if hero_rows:
-		with conn.cursor() as cursor:
-			execute_values(
-				cursor,
-				"""
-				insert into heroes (hero_id, class_name, name, hero_type, complexity)
-				values %s
-				on conflict (hero_id) do update set
-				class_name = excluded.class_name,
-				name = excluded.name,
-				hero_type = excluded.hero_type,
-				complexity = excluded.complexity;
-				""",
-				hero_rows
-				)
-		conn.commit()
-		print(f"successfully updated {len(hero_rows)} heroes in database")
 
 if __name__ == "__main__":
-	try:
-		connection = psycopg2.connect(**DB_Params)
-		setup_database(connection)
-		sync_heroes(connection)
-		connection.close()
-		print("hero sync complete!")
-	except Exception as e:
-		print(f"database connection failed {e}")
+    sys.exit(main())
