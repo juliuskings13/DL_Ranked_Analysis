@@ -171,8 +171,17 @@ def resolve_target_dir(arg: str | None = None) -> Path:
 
 
 def week_label_from_dir(data_dir: Path) -> str:
-    m = re.search(r"week(\d+)", data_dir.name)
-    return f"Week {m.group(1)}" if m else data_dir.name
+    """How charts name the period: period_meta.json's label (e.g. "Nurse Harrow, days 1–7"),
+    else "Week N" from the folder name."""
+    import json
+    try:
+        label = json.loads((Path(data_dir) / "period_meta.json").read_text()).get("label")
+        if label:
+            return label
+    except (OSError, ValueError):
+        pass
+    m = re.search(r"week(\d+)", Path(data_dir).name)
+    return f"Week {m.group(1)}" if m else Path(data_dir).name
 
 
 # =============================================================================

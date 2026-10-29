@@ -251,10 +251,20 @@ def normal_cdf(x):
 
 
 def previous_week_dir(data_dir) -> "Path | None":
-    """week<N-1>_analysis next to week<N>_analysis, if it exists."""
+    """The folder this period is compared against: period_meta.json's compare_dir (set by
+    query_transform: the week before, or a patch period's "before" period), else
+    week<N-1>_analysis next to week<N>_analysis. None if it doesn't exist."""
+    import json
     import re
     from pathlib import Path
     data_dir = Path(data_dir)
+    try:
+        meta = json.loads((data_dir / "period_meta.json").read_text())
+        if "compare_dir" in meta:
+            prev = data_dir.parent / meta["compare_dir"] if meta["compare_dir"] else None
+            return prev if prev is not None and (prev / "hero_winrates.csv").exists() else None
+    except (OSError, ValueError):
+        pass
     m = re.search(r"week(\d+)", data_dir.name)
     if not m:
         return None

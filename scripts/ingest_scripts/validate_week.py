@@ -16,14 +16,14 @@ Checks
     ban_coverage        share of complete matches with recorded bans (info only: the API
                         records bans only for matches whose replay it processed)
 
-Usage: python validate_week.py [--week N | --date YYYY-MM-DD] [--max-incomplete-pct 2.0]
+Usage: python validate_week.py [--week N | --date YYYY-MM-DD | --period NAME] [--max-incomplete-pct 2.0]
 """
 from __future__ import annotations
 
 import argparse
 import sys
 
-from pipeline_common import connect, parse_date, setup_logging, week_bounds, week_number
+from pipeline_common import connect, get_period, parse_date, setup_logging, week_bounds, week_number
 
 log = setup_logging()
 
@@ -66,13 +66,19 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--week", type=int)
     g.add_argument("--date", "--start-date", dest="date")
+    g.add_argument("--period", help="a period from register_period.py")
     ap.add_argument("--max-incomplete-pct", type=float, default=2.0,
                     help="incomplete matches above this share of the week are flagged")
     args = ap.parse_args()
 
-    week = args.week or week_number(parse_date(args.date))
-    start, end = week_bounds(week)
     conn = connect()
+    if args.period:
+        with conn.cursor() as cur:
+            p = get_period(cur, args.period)
+        week, start, end = args.period, p["start"], p["end"]
+    else:
+        week = args.week or week_number(parse_date(args.date))
+        start, end = week_bounds(week)
     worst = "PASS"
     try:
         with conn.cursor() as cur:
@@ -81,7 +87,7 @@ def main() -> int:
                         (start, end))
             cur.execute("SELECT COUNT(DISTINCT match_id), COUNT(*) FROM wk")
             n_matches, n_rows = cur.fetchone()
-            log.info("Week %s: %s matches, %s player rows", week, f"{n_matches:,}", f"{n_rows:,}")
+            log.info("%s: %s matches, %s player rows", f"Week {week}" if isinstance(week, int) else week, f"{n_matches:,}", f"{n_rows:,}")
             for name, (severity, sql) in CHECKS.items():
                 cur.execute(sql, {"max_incomplete": args.max_incomplete_pct})
                 bad, count = cur.fetchone()

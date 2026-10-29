@@ -50,6 +50,24 @@ def period_name(week: int) -> str:
     return f"Week_{week}"
 
 
+def period_folder(name: str) -> str:
+    """Output folder for a period: Week_12 -> week12_analysis, anything else -> its name in lowercase."""
+    if name.startswith("Week_") and name[5:].isdigit():
+        return f"week{name[5:]}_analysis"
+    return name.lower()
+
+
+def get_period(cur, name: str) -> dict:
+    """A patch_periods row by name: start, end (None = open), description, compare_to."""
+    cur.execute("""SELECT start_time, end_time, description, compare_to
+                   FROM patch_periods WHERE period_name = %s""", (name,))
+    row = cur.fetchone()
+    if not row:
+        raise SystemExit(f"'{name}' is not in patch_periods. Weeks are added by the ingest; "
+                         "other periods by register_period.py (--list shows them).")
+    return dict(zip(("start", "end", "description", "compare_to"), row))
+
+
 def parse_date(s: str | None) -> date | None:
     return datetime.strptime(s[:10], "%Y-%m-%d").date() if s else None
 
@@ -128,11 +146,36 @@ CREATE TABLE IF NOT EXISTS match_bans (
 CREATE INDEX IF NOT EXISTS match_bans_start_time_idx ON match_bans (start_time);
 
 CREATE TABLE IF NOT EXISTS patch_periods (
-    period_id   SMALLINT PRIMARY KEY,
+    period_id   SMALLINT PRIMARY KEY,    -- weeks use their week number; other periods start at 1000
     period_name VARCHAR(100) UNIQUE,
     start_time  TIMESTAMPTZ NOT NULL,
     end_time    TIMESTAMPTZ,             -- NULL = still open (e.g. the current patch)
     description VARCHAR(100)
+);
+-- the period a patch / release period is compared against (e.g. the 7 days before it)
+ALTER TABLE patch_periods ADD COLUMN IF NOT EXISTS compare_to VARCHAR(100);
+
+-- Patch posts from the API's patch feed (forum changelog + Steam news) and hero releases found in
+-- the match data. Re-fetching the feed never duplicates a post: the link is the key.
+-- Posts within hours of each other (forum + Steam copies, hotfixes) belong to one patch event.
+CREATE TABLE IF NOT EXISTS patch_events (
+    event_id     SERIAL PRIMARY KEY,
+    start_time   TIMESTAMPTZ NOT NULL,       -- earliest timed post (a hero's first ranked match wins)
+    kind         VARCHAR(20) NOT NULL,       -- hero_release / patch / minor_patch / unknown / ignore
+    name         VARCHAR(100) UNIQUE,        -- e.g. Release_Nurse_Harrow, Patch_2026-09-29
+    description  VARCHAR(200),
+    confirmed    BOOLEAN NOT NULL DEFAULT FALSE,   -- only confirmed events get analysis periods
+    period_name  VARCHAR(100)                -- the period registered for it, once confirmed
+);
+CREATE TABLE IF NOT EXISTS patch_posts (
+    link          VARCHAR(300) PRIMARY KEY,
+    source        VARCHAR(20) NOT NULL,      -- forum / steam / data
+    title         VARCHAR(300),
+    published_at  TIMESTAMPTZ,               -- forum: last EDIT time, so not used for timing
+    effective_at  TIMESTAMPTZ NOT NULL,      -- when the patch happened, as best we can tell
+    time_known    BOOLEAN NOT NULL,          -- false = only the date is known (forum titles)
+    event_id      INT REFERENCES patch_events (event_id),
+    fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS items (

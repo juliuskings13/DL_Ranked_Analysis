@@ -27,7 +27,7 @@ flowchart LR
 | Ingest | `ingest_dl_comm_api_parquet.py` (matches), `hero_ingest_deadlock.py`, `ingest_dl_comm_api_database.py` (items), `ingest_hero_icons.py` | Streams one week of ranked player rows from the API's parquet dump through DuckDB (date filter pushed down to the remote files), bulk-loads PostgreSQL via `COPY` into a staging table + `INSERT … ON CONFLICT` (idempotent re-runs), then rebuilds that week's team rosters from complete matches only |
 | Validate | `validate_week.py` | Data-quality gate: unknown heroes, incomplete matches, inconsistent winners, duplicate heroes, duration mismatches, roster coverage. Non-zero exit stops the pipeline |
 | Transform | `query_transform.py` | Stages the week's complete matches once in temp tables, then runs every export against them (win rates, duo synergies, archetype differentials and matchups, duration histograms, comp frequency) |
-| Orchestrate | `run_pipeline.py` | Runs heroes → ingest → validate → transform → charts for a week; stops at the first failing stage and can resume with `--from` |
+| Orchestrate | `run_pipeline.py`, `register_period.py` | Runs heroes → ingest → validate → transform → charts → insights for a week or a registered patch/release period; stops at the first failing stage and can resume with `--from` |
 | Visualize | `gen_visuals.py` + one script per chart, `animate.py` | Renders every chart for the target week as 1080×1080 cards; `animate.py` turns any card into a video clip (build-in, hold, highlight beats) piped to ffmpeg |
 | Insights | `insights.py` | Each chart script reports its findings as data (effect size + confidence); ranks them, merges findings per hero, and writes the week's voiceover outline (`insights.md`) plus a matching `animate.py` scenes CSV |
 | Shared | `db_config.py`, `pipeline_common.py`, `theme.py`, `chart_stats.py` | DB settings from env (UTC sessions); schema, week math and bulk-load helpers; card layout & palette; statistics (Wilson CIs, sample thresholds, pick rate) |
@@ -82,6 +82,34 @@ python scripts/run_pipeline.py                 # last completed week, end to end
 python scripts/run_pipeline.py --week 12       # a specific week
 python scripts/run_pipeline.py --week 12 --from transform   # resume after fixing a failed stage
 ```
+
+### Patch and hero-release periods
+
+Weeks stay the backbone (a consistent week-over-week series). For patch videos, periods are
+anchored to the patch or release time and paired with the same-length period right before it,
+which every chart and `insights.py` compares against.
+
+`sync_patches.py` (the last pipeline stage) does this automatically: it reads the API's patch
+feed (forum changelog + Steam news) and detects hero releases from the match data, stores each
+post once, groups posts within 12 hours into one patch event (forum + Steam copies, hotfixes),
+and registers periods for confirmed events. Anything it can't classify waits for review:
+
+```bash
+python scripts/ingest_scripts/sync_patches.py --list
+python scripts/ingest_scripts/sync_patches.py --confirm 8 --name Patch_6_0 --description "October balance patch"
+python scripts/ingest_scripts/sync_patches.py --ignore 7        # a news post, not a patch
+```
+
+Periods can also be registered by hand:
+
+```bash
+python scripts/ingest_scripts/register_period.py --releases                 # hero release times in your data
+python scripts/ingest_scripts/register_period.py --release "Nurse Harrow"   # days 1-7 + the 7 days before
+python scripts/ingest_scripts/register_period.py --name Patch_2026-09-29 --start "2026-09-29 20:25" --days 7
+python scripts/run_pipeline.py --period Release_Nurse_Harrow_d1-7
+```
+
+Periods can be any length. Output goes to `<project>/<period name>/`, labeled on every card.
 
 Each stage also runs on its own (`--week N` or `--date YYYY-MM-DD`). Week N is the N-th
 7-day block since the ranked launch on 2026-07-30, `[start, start + 7 days)` in UTC; running

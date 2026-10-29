@@ -1,4 +1,5 @@
 import argparse
+import os
 import subprocess
 import sys
 from datetime import date, datetime
@@ -10,6 +11,9 @@ RANKED_START_DATE = date(2026, 7, 30)
 parser = argparse.ArgumentParser(description="Matplotlib Visualization Suite")
 parser.add_argument(
     "--start-date", type=str, default=None, help="YYYY-MM-DD target date"
+)
+parser.add_argument(
+    "--dir", type=str, default=None, help="analysis folder to chart (e.g. a patch period's folder)"
 )
 args = parser.parse_args()
 
@@ -23,13 +27,9 @@ else:
 days_elapsed = (target_d - RANKED_START_DATE).days
 week_num = days_elapsed // 7
 
-# Construct target week directory path
-target_dir = (
-    Path.home()
-    / "Projects"
-    / "DL_ranked_analysis"
-    / f"week{week_num}_analysis"
-)
+# Construct target week directory path (or use the folder given with --dir)
+project_root = Path(os.environ.get("DL_PROJECT_ROOT", Path.home() / "Projects" / "DL_ranked_analysis"))
+target_dir = Path(args.dir) if args.dir else project_root / f"week{week_num}_analysis"
 
 # Every script renders 1080x1080 cards via theme.py / chart_stats.py
 plotting_scripts = [

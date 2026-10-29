@@ -17,6 +17,7 @@ Usage:
     python ingest_dl_comm_api_parquet.py --date 2026-10-26    # week containing the day before
     python ingest_dl_comm_api_parquet.py --week 12
     python ingest_dl_comm_api_parquet.py --week 12 --with-stats         # also damage/healing stats
+    python ingest_dl_comm_api_parquet.py --period Release_Nurse_Harrow_d1-7   # see register_period.py
     python ingest_dl_comm_api_parquet.py --week 12 --source-files ./sample/*.parquet   # offline/dev
 """
 from __future__ import annotations
@@ -25,12 +26,12 @@ import argparse
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import duckdb
 import requests
 
-from pipeline_common import (connect, copy_upsert, ensure_schema, parse_date, period_name,
+from pipeline_common import (connect, copy_upsert, ensure_schema, get_period, parse_date, period_name,
                              setup_logging, week_bounds, week_number)
 
 MANIFEST_URL = "https://data.deadlock-api.com/v1/manifest.json"
@@ -210,38 +211,59 @@ def rebuild_rosters(conn, start: datetime, end: datetime) -> tuple[int, int]:
 
 
 # --- MAIN --------------------------------------------------------------------------
+def resolve_range(args) -> tuple[str, datetime, datetime, int | None]:
+    """(what, start, end, week): a week by number/date, or a registered period plus the period it
+    is compared against (both are loaded, so the comparison is ready too)."""
+    if not args.period:
+        week = args.week or week_number(parse_date(args.date))
+        start, end = week_bounds(week)
+        return f"Week {week}", start, end, week
+    conn = connect()
+    try:
+        ensure_schema(conn)
+        with conn.cursor() as cur:
+            p = get_period(cur, args.period)
+            start, end = p["start"], p["end"] or datetime.now(timezone.utc)
+            if p["compare_to"]:
+                start = min(start, get_period(cur, p["compare_to"])["start"])
+    finally:
+        conn.close()
+    return f"{args.period} (+ its comparison period)", start, end, None
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Ingest one ranked week from the Deadlock API parquet dump")
+    ap = argparse.ArgumentParser(description="Ingest one ranked week (or a registered period) from the Deadlock API")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--date", "--start-date", dest="date",
                    help="YYYY-MM-DD; ingests the last week completed before this date (default today)")
     g.add_argument("--week", type=int, help="week number to ingest")
+    g.add_argument("--period", help="a period from register_period.py (also loads its comparison period)")
     ap.add_argument("--source-files", nargs="+", help="local/remote parquet files instead of the manifest")
     ap.add_argument("--with-stats", action="store_true",
                     help="also load the 13 damage/healing stats (~10x more download)")
     args = ap.parse_args()
 
-    week = args.week or week_number(parse_date(args.date))
-    start, end = week_bounds(week)
-    log.info("Week %s: %s -> %s (UTC, end exclusive)", week, f"{start:%Y-%m-%d %H:%M}", f"{end:%Y-%m-%d %H:%M}")
+    what, start, end, week = resolve_range(args)
+    log.info("%s: %s -> %s (UTC, end exclusive)", what, f"{start:%Y-%m-%d %H:%M}", f"{end:%Y-%m-%d %H:%M}")
 
     conn = connect()
     try:
         ensure_schema(conn)                      # before anything writes (fresh-DB safe)
-        register_week(conn, week, start, end)
+        if week is not None:
+            register_week(conn, week, start, end)
         files = args.source_files or parquet_urls("match_player")
         log.info("Reading %s parquet file(s)", len(files))
         src = duckdb_source(files)
         n = load_match_players(src, conn, start, end, args.with_stats)
         if n == 0:
-            log.error("No ranked rows found for week %s — source not published yet, or wrong week?", week)
+            log.error("No ranked rows found for %s — source not published yet, or wrong dates?", what)
             return 1
         kept, skipped = rebuild_rosters(conn, start, end)
         log.info("Done: %s player rows, %s matches (%s incomplete matches skipped from rosters)",
                  f"{n:,}", f"{kept:,}", f"{skipped:,}")
         return 0
     except Exception:
-        log.exception("Ingest failed for week %s", week)   # full traceback, non-zero exit
+        log.exception("Ingest failed for %s", what)   # full traceback, non-zero exit
         conn.rollback()
         return 1
     finally:

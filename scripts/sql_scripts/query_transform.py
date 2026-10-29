@@ -9,7 +9,8 @@ How it works
        plus wk_type_counts (heroes of each archetype per team, zeros included)
     3. run every export against those small tables, instead of re-filtering the full
        match_player table 15 times
-    4. write <project>/week<N>_analysis/<name>.csv (+ period_meta.json)
+    4. write <project>/week<N>_analysis/<name>.csv (or <project>/<period name>/ for other periods),
+       plus period_meta.json: the label charts print and the folder they compare against
 
 Using only complete matches keeps every count consistent (12 hero rows per match), which the
 charts rely on when they turn hero appearances into match counts.
@@ -18,7 +19,7 @@ Usage:
     python query_transform.py                       # last completed week
     python query_transform.py --date 2026-10-26
     python query_transform.py --week 12
-    python query_transform.py --period Patch_1_2    # any named row in patch_periods
+    python query_transform.py --period Release_Nurse_Harrow_d1-7   # any period from register_period.py
 """
 from __future__ import annotations
 
@@ -26,11 +27,12 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from pipeline_common import connect, parse_date, period_name, setup_logging, week_number
+from pipeline_common import connect, get_period, parse_date, period_folder, period_name, setup_logging, week_number
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]       # scripts/sql_scripts/ -> project root
 MIN_DUO_GAMES = 1000          # duos below this are not exported (the chart also filters)
@@ -180,12 +182,16 @@ EXPORTS: dict[str, tuple[str, tuple[str, ...]]] = {
 # =============================================================================
 # RUN
 # =============================================================================
-def resolve_period(cur, name: str):
-    cur.execute("SELECT start_time, end_time FROM patch_periods WHERE period_name = %s", (name,))
-    row = cur.fetchone()
-    if not row:
-        raise SystemExit(f"'{name}' is not in patch_periods — run the ingest for that week first.")
-    return row
+def period_info(cur, name: str) -> dict:
+    """Start/end plus what charts need: a display label and the folder to compare against."""
+    p = get_period(cur, name)
+    if name.startswith("Week_") and name[5:].isdigit():
+        n = int(name[5:])
+        p["label"], p["compare_dir"] = f"Week {n}", (f"week{n - 1}_analysis" if n > 1 else None)
+    else:
+        p["label"] = p["description"] or name.replace("_", " ")
+        p["compare_dir"] = period_folder(p["compare_to"]) if p["compare_to"] else None
+    return p
 
 
 def query_df(conn, sql: str, params: dict) -> pd.DataFrame:
@@ -209,23 +215,40 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--date", "--start-date", dest="date", help="YYYY-MM-DD (default today): uses the last completed week")
     g.add_argument("--week", type=int)
-    g.add_argument("--period", help="any period_name in patch_periods, e.g. a patch window")
+    g.add_argument("--period", help="any period in patch_periods, e.g. one from register_period.py")
+    ap.add_argument("--with-compare", action="store_true",
+                    help="also export the period it is compared against (patch periods' 'before' period)")
     ap.add_argument("--out-dir", help="override the output folder")
     args = ap.parse_args()
 
-    if args.period:
-        name, folder = args.period, args.period.lower()
-    else:
-        week = args.week or week_number(parse_date(args.date))
-        name, folder = period_name(week), f"week{week}_analysis"
-    out_dir = Path(args.out_dir) if args.out_dir else PROJECT_ROOT / folder
+    name = args.period or period_name(args.week or week_number(parse_date(args.date)))
+    names = [name]
+    if args.with_compare:
+        conn = connect()
+        with conn.cursor() as cur:
+            compare = get_period(cur, name)["compare_to"]
+        conn.close()
+        names += [compare] if compare else []
+    rc = 0
+    for n in names:
+        out_dir = Path(args.out_dir) / period_folder(n) if (args.out_dir and len(names) > 1) else \
+            Path(args.out_dir) if args.out_dir else PROJECT_ROOT / period_folder(n)
+        rc |= transform(n, out_dir)
+    return rc
+
+
+def transform(name: str, out_dir: Path) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     conn = connect()
     failed = []
     try:
         with conn.cursor() as cur:
-            start, end = resolve_period(cur, name)
+            info = period_info(cur, name)
+            start, end = info["start"], info["end"]
+            if end is not None and end > datetime.now(timezone.utc):
+                log.error("%s isn't over yet (ends %s UTC): analyze it after that", name, f"{end:%Y-%m-%d %H:%M}")
+                return 1
             log.info("%s: %s -> %s  =>  %s", name, start, end or "open", out_dir)
             params = {"start": start, "end": end, "min_duo": MIN_DUO_GAMES, "top_comps": TOP_COMPS}
             t0 = time.time()
@@ -267,7 +290,8 @@ def main() -> int:
                 conn.rollback()
                 failed.append(export)
 
-        meta = {"period": name, "start": str(start), "end": str(end) if end else None,
+        meta = {"period": name, "label": info["label"], "compare_dir": info["compare_dir"],
+                "start": str(start), "end": str(end) if end else None,
                 "complete_matches": n_matches, "player_rows_in_period": n_rows_all,
                 "incomplete_rows_excluded": n_rows_all - 12 * n_matches,
                 "matches_with_bans": n_ban_matches,
