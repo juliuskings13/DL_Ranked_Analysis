@@ -40,7 +40,7 @@ the analyses need, flattened into four local PostgreSQL tables:
 
 | Local table | Grain | Key columns |
 |---|---|---|
-| `match_player` | one row per player per match | `match_id`, `account_id`, `hero_id`, `team`, `won`, `start_time`, `duration_s`, rank badges, ~20 end-of-match stats (kills, net worth, damage, healing…) |
+| `match_player` | one row per player per match | `match_id`, `account_id`, `hero_id`, `team`, `won`, `start_time`, `duration_s`, rank badges, ~20 **optional** end-of-match stats (kills, net worth, damage, healing…) |
 | `match_hero_roster` | one row per match | `team0` / `team1` hero-id arrays, `winning_team`, `match_duration_s` |
 | `heroes` | one row per hero | `hero_id`, `name`, `hero_type` (archetype) |
 | `patch_periods` | one row per analysis window | `period_name` (e.g. `Week_8`), `start_time`, `end_time` |

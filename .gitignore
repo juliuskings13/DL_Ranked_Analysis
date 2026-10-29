@@ -14,7 +14,8 @@ env/
 .ruff_cache/
 *.egg-info/
 
-# --- data (large, and not ours to redistribute) ---*_analysis/
+# --- data (large, and not ours to redistribute) ---
+match_player_cols.txt
 logs/
 *_analysis/
 *.parquet
