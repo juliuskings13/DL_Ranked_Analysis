@@ -28,8 +28,9 @@ import pandas as pd
 from matplotlib.patches import FancyBboxPatch, Rectangle
 
 import theme as T
-from chart_stats import (BAN_WEIGHT, POWER_ALPHA, TIER_BANDS, TIER_NAMES, add_power, hero_deltas, load_hero_meta,
-                         previous_week_dir, total_matches_from_hero_rows)
+from chart_stats import (BAN_WEIGHT, POWER_ALPHA, TIER_BANDS, TIER_NAMES, Insight, add_power, hero_deltas,
+                         load_hero_meta, normal_cdf, previous_week_dir, total_matches_from_hero_rows,
+                         wr_confidence)
 
 MOVER_ROWS = 6          # risers and fallers each
 BAR_H = 0.62
@@ -43,6 +44,7 @@ def prepare(data_dir: Path, base: Path | None = None) -> tuple[pd.DataFrame, str
     prev = Path(base) if base else previous_week_dir(data_dir)
     if prev is None or not (prev / "hero_winrates.csv").exists():
         df = add_power(load_hero_meta(data_dir))
+        df.attrs["ban_weight"] = BAN_WEIGHT if "ban_rate" in df and df["ban_rate"].notna().any() else 0.0
         df["status"], df["tier_change"], df["power_clear"] = "returning", np.nan, False
         return df.sort_values("power", ascending=False).reset_index(drop=True), None
     return hero_deltas(data_dir, prev), T.week_label_from_dir(prev)
@@ -257,8 +259,8 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
                         color=T.GREEN if up else T.RED, fontsize=T.px_to_pt(max(16, s * 0.32)),
                         fontweight="bold", alpha=badge_a * faded, zorder=9, path_effects=T.STROKE)
         y += h
-    has_bans = "ban_rate" in d and d["ban_rate"].notna().any()
-    presence = f"pick rate + {BAN_WEIGHT:g} × ban rate" if has_bans else "pick rate"
+    bw = d.attrs.get("ban_weight", BAN_WEIGHT if "ban_rate" in d and d["ban_rate"].notna().any() else 0)
+    presence = f"pick rate + {bw:g} × ban rate" if bw else "pick rate"
     note = f"Power = (win rate − 50) × (presence ÷ median)^{POWER_ALPHA:g}  ·  presence = {presence}"
     note += "\nNumber under icon = win rate"
     if prev_label:
@@ -266,6 +268,90 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
     ax.text(W, H - 4, note, ha="right", va="bottom", color=T.TEXT_MUTED, fontsize=T.px_to_pt(14),
             alpha=p_frame, linespacing=1.4)
     return fig
+
+
+# --- INSIGHTS ----------------------------------------------------------------------
+WATCH_N = 3             # nerf-watch / buff-watch heroes per week
+
+
+def _tags(r) -> tuple:
+    tags = []
+    if r.get("status") == "new":
+        tags.append("new hero")
+    if pd.notna(r.get("games_prev")) and r["games_prev"] < 0.5 * r["games"]:
+        tags.append("partial week last time (likely released mid-week)")
+    if pd.notna(r.get("ban_rate_prev")) and r["ban_rate_prev"] == 0 and r.get("ban_rate", 0) > 0:
+        tags.append("entered the ban pool: bans now add to its presence")
+    elif pd.notna(r.get("ban_rate")) and r["ban_rate"] == 0:
+        tags.append("not bannable yet (new hero)")
+    return tuple(tags)
+
+
+def insights(data_dir: Path, base: str | None = None, **_) -> list[Insight]:
+    d, prev_label = prepare(data_dir, Path(base) if base else None)
+    out: list[Insight] = []
+    has_bans = "ban_rate" in d and d["ban_rate"].notna().any()
+
+    def where(r):
+        ban = f", banned {r['ban_rate']:.0f}%" if has_bans and pd.notna(r.get("ban_rate")) else ""
+        return f"{r['winrate']:.1f}% win rate in {r['pick_rate']:.0f}% of matches{ban}"
+
+    top = d.head(3)
+    out.append(Insight("tier_list", "tier_top", context=True,
+                       headline=f"{', '.join(top['hero_name'][:-1])} and {top['hero_name'].iloc[-1]} top the tier list",
+                       detail="; ".join(f"{r['hero_name']}: {where(r)}" for _, r in top.iterrows()),
+                       highlight=tuple(top["hero_name"])))
+
+    # nerf / buff watch: the extremes of the power ranking
+    for label, rows, kind in (("Nerf watch", d[d["tier"] == "GOD TIER"].head(WATCH_N), "nerf_watch"),
+                              ("Buff watch", d[d["tier"] == "TRASH"].tail(WATCH_N).iloc[::-1], "buff_watch")):
+        for _, r in rows.iterrows():
+            out.append(Insight("tier_list", kind, hero=r["hero_name"], highlight=(r["hero_name"],),
+                               headline=f"{label}: {r['hero_name']} ({r['tier']}, power {r['power']:+.1f})",
+                               detail=where(r).capitalize(), effect=abs(r["power"]),
+                               confidence=float(wr_confidence(r["winrate"], r["games" if "games" in r else "total_matches"])),
+                               tags=_tags(r)))
+    if not prev_label:
+        return out
+
+    movers_card, _ = pick_movers(d)
+    on_movers = set(movers_card["hero_name"])
+    for _, r in d.iterrows():
+        if r["status"] == "new":
+            out.append(Insight("tier_list", "new_hero", hero=r["hero_name"], highlight=(r["hero_name"],),
+                               headline=f"New: {r['hero_name']} debuts in {r['tier']}",
+                               detail=where(r).capitalize(), effect=abs(r["power"]) + 1,
+                               confidence=float(wr_confidence(r["winrate"], r["games"])), tags=_tags(r)))
+        elif pd.notna(r["tier_change"]) and r["tier_change"] != 0:
+            up = r["tier_change"] > 0
+            se = np.hypot(r["power_se"], r["power_se_prev"])
+            move = f"{r['hero_name']} {'climbs' if up else 'drops'} {r['tier_prev']} → {r['tier']}"
+            wr_s = f"{r['winrate_prev']:.1f}% → {r['winrate']:.1f}%"
+            pres_s = f"{r['presence_prev']:.0f}% → {r['presence']:.0f}% of matches"
+            if abs(r["delta_from_presence"]) > abs(r["delta_from_wr"]):
+                # popularity, not win rate, moved this hero
+                more = r["presence"] > r["presence_prev"]
+                why = ("more players picking a winning hero" if more and r["winrate"] > 50 else
+                       "more players picking a losing hero" if more else
+                       "fewer players picking a losing hero" if r["winrate"] < 50 else
+                       "fewer players picking a winning hero")
+                headline, detail = f"{move}, mostly from {why}", f"Presence {pres_s}; win rate {wr_s}"
+            else:
+                headline = move
+                detail = f"Win rate {wr_s}" + (f"; presence {pres_s}" if abs(r["presence"] - r["presence_prev"]) >= 3 else "")
+            out.append(Insight("tier_list", "tier_change", hero=r["hero_name"], highlight=(r["hero_name"],),
+                               headline=headline, detail=detail, effect=abs(r["power_delta"]),
+                               confidence=float(normal_cdf(abs(r["power_delta"]) / se)), tags=_tags(r)))
+        elif r["clear"]:
+            up = r["wr_delta"] > 0
+            out.append(Insight("hero_movers" if r["hero_name"] in on_movers else "tier_list", "mover",
+                               hero=r["hero_name"], highlight=(r["hero_name"],),
+                               headline=f"{r['hero_name']} {'up' if up else 'down'} {abs(r['wr_delta']):.1f} pts "
+                                        f"to {r['winrate']:.1f}% (still {r['tier']})",
+                               detail=f"{r['winrate_prev']:.1f}% {prev_label} → {r['winrate']:.1f}% now, "
+                                      f"in {r['pick_rate']:.0f}% of matches",
+                               effect=abs(r["wr_delta"]), confidence=float(r["p_change"]), tags=_tags(r)))
+    return out
 
 
 # --- ENTRY POINTS ------------------------------------------------------------------

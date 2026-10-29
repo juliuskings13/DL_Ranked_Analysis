@@ -26,6 +26,7 @@ Usage: python3 hero_duo_synergy_table.py [week_dir] [--highlight "Haze,Paige"]
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from math import erf, sqrt
 
 import numpy as np
@@ -34,6 +35,7 @@ from matplotlib.patches import Rectangle
 
 import theme as T
 from chart_stats import expected_pair_wr, load_hero_meta, total_matches_from_hero_rows
+from chart_stats import Insight
 
 CSV_NAME = "hero_duo_synergies.csv"
 MIN_DUO_N = 1000
@@ -206,6 +208,48 @@ def render(rows: pd.DataFrame, meta: T.ChartMeta, title: str, subtitle: str,
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    """The most reliable synergy and anti-synergy (ranked by the cautious end of the range)."""
+    df = prepare(data_dir)
+    out = []
+    for kind, pick, card in (("duo_synergy", df[df["lift"] > 0].nlargest(1, "lift_lo"), "hero_duo_synergy_best"),
+                             ("duo_anti", df[df["lift"] < 0].nsmallest(1, "lift_hi"), "hero_duo_synergy_worst")):
+        for _, r in pick.iterrows():
+            a, b = r["hero_name_a"], r["hero_name_b"]
+            out.append(Insight(card, kind, highlight=(a, b), hero=None,
+                               headline=f"{a} + {b} win {abs(r['lift']):.1f} pts "
+                                        f"{'more' if r['lift'] > 0 else 'less'} than their solo win rates predict",
+                               detail=f"{r['wr']:.1f}% together vs {r['expected']:.1f}% expected, {int(r['n']):,} games",
+                               effect=abs(r["lift"]), confidence=float(r["conf"])))
+    return out
+
+def cards(data_dir: Path, sort: str = "lift", **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    df = prepare(data_dir)
+    heroes = load_hero_meta(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(heroes["total_matches"]),
+                       min_n=MIN_DUO_N, min_n_unit="games per duo")
+    # pick by the pessimistic end of the range (no ties), then display in the chosen order
+    key = SORT_KEYS[sort]
+    best = df[df["lift"] > 0].nlargest(ROWS, "lift_lo")
+    best = best.sort_values(key, ascending=False)
+    worst = df[df["lift"] < 0].nsmallest(ROWS, "lift_hi")
+    worst = worst.sort_values(key, ascending=(key == "lift"))   # most negative lift first
+    out = {}
+    if not best.empty:
+        b0 = best.loc[best["lift"].idxmax()]
+        sub_b = (f"{b0['hero_name_a']} + {b0['hero_name_b']} win {b0['lift']:+.1f} pts more than "
+                 "their solo win rates predict")
+        out["hero_duo_synergy_best"] = lambda progress=1.0, highlight=None: render(
+            best, meta, "DUOS THAT ACTUALLY SYNERGIZE", sub_b, progress, highlight)
+    if not worst.empty:
+        w0 = worst.loc[worst["lift"].idxmin()]
+        sub_w = f"{w0['hero_name_a']} + {w0['hero_name_b']}: {w0['lift']:+.1f} pts below what their solo win rates predict"
+        out["hero_duo_synergy_worst"] = lambda progress=1.0, highlight=None: render(
+            worst, meta, "DUOS THAT DRAG EACH OTHER DOWN", sub_w, progress, highlight)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -217,35 +261,16 @@ def main() -> None:
 
     data_dir = T.resolve_target_dir(args.week_dir)
     df = prepare(data_dir)
-    heroes = load_hero_meta(data_dir)
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(heroes["total_matches"]),
-                       min_n=MIN_DUO_N, min_n_unit="games per duo")
-    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
     if len(df) < 2 * ROWS:
         print(f"Warning: only {len(df)} duos in {CSV_NAME}; export all duos ≥{MIN_DUO_N} games "
               "(drop the WR ≥ 50 / LIMIT 20 filters in extract_hero_pairings) for a fair ranking.")
-
     corr = np.corrcoef(df["expected"], df["lift"])[0, 1]
     if corr < -0.4:
         print(f"Warning: lift correlates with expected WR (r={corr:.2f}). Strong pairs look "
               "anti-synergistic across the board, so the expected-WR baseline is biased; "
               "check that hero_winrates.csv covers the same week/filters as the duo export.")
-
-    # pick by the pessimistic end of the range (no ties), then display in the chosen order
-    key = SORT_KEYS[args.sort]
-    best = df[df["lift"] > 0].nlargest(ROWS, "lift_lo")
-    best = best.sort_values(key, ascending=False)
-    worst = df[df["lift"] < 0].nsmallest(ROWS, "lift_hi")
-    worst = worst.sort_values(key, ascending=(key == "lift"))   # most negative lift first
     out = data_dir / "graphs"
-    b0 = best.loc[best["lift"].idxmax()]
-    T.save_card(render(best, meta, "DUOS THAT ACTUALLY SYNERGIZE",
-                       f"{b0['hero_name_a']} + {b0['hero_name_b']} win {b0['lift']:+.1f} pts more than their solo win rates predict",
-                       args.progress, hl), out / "hero_duo_synergy_best.png")
-    w0 = worst.loc[worst["lift"].idxmin()]
-    T.save_card(render(worst, meta, "DUOS THAT DRAG EACH OTHER DOWN",
-                       f"{w0['hero_name_a']} + {w0['hero_name_b']}: {w0['lift']:+.1f} pts below what their solo win rates predict",
-                       args.progress, hl), out / "hero_duo_synergy_worst.png")
+    T.save_cards(cards(data_dir, sort=args.sort), out, args.progress, T.parse_names(args.highlight))
     print(f"Saved duo synergy cards to {out}  ({len(df)} duos considered)")
 
 

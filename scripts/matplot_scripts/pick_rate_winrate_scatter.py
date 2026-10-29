@@ -22,6 +22,7 @@ from matplotlib.ticker import FuncFormatter
 
 import theme as T
 from chart_stats import MIN_N, add_pick_rate, add_winrate_ci, total_matches_from_hero_rows
+from chart_stats import Insight, wr_confidence
 
 # --- CONFIG ------------------------------------------------------------------
 CSV_NAME = "hero_winrates.csv"
@@ -291,6 +292,38 @@ def render(df: pd.DataFrame, box: dict, meta: T.ChartMeta, progress: float = 1.0
 
 
 # --- CLI ---------------------------------------------------------------------
+def insights(data_dir: Path, box: str = BOX_PICK_METHOD, k: float = BOX_PICK_K, **_) -> list[Insight]:
+    """Popular traps (picked a lot, clearly losing) and hidden gems (rarely picked, clearly winning)."""
+    df, zone = prepare(pd.read_csv(data_dir / CSV_NAME), method=box, box_k=k)
+    ok = df[df["sufficient"]]
+    q1, q3 = ok["pick_rate"].quantile([0.25, 0.75])
+    card = Path(OUTPUT_NAME).stem
+    out = []
+    traps = ok[(ok["pick_rate"] >= q3) & (ok["wr_hi"] < 50)].nsmallest(2, "winrate")
+    gems = ok[(ok["pick_rate"] <= q1) & (ok["wr_lo"] > 50)].nlargest(2, "winrate")
+    for kind, rows, text in (("popular_trap", traps, "Popular trap"), ("hidden_gem", gems, "Hidden gem")):
+        for _, r in rows.iterrows():
+            out.append(Insight(card, kind, hero=r["hero_name"], highlight=(r["hero_name"],),
+                               headline=f"{text}: {r['hero_name']} wins {r['winrate']:.1f}% "
+                                        f"in {r['pick_rate']:.0f}% of matches",
+                               detail=("one of the most-picked heroes, yet clearly below 50%" if kind == "popular_trap"
+                                       else "one of the least-picked heroes, yet clearly above 50%"),
+                               effect=abs(r["winrate"] - 50),
+                               confidence=float(wr_confidence(r["winrate"], r["total_matches"]))))
+    out.append(Insight(card, "balanced_zone", context=True,
+                       headline=f"{int(df['in_box'].sum())} of {len(df)} heroes sit in the balanced zone",
+                       detail=f"49–51% win rate and a typical pick rate ({zone['x0']:.0f}–{zone['x1']:.0f}%)"))
+    return out
+
+def cards(data_dir: Path, box: str = BOX_PICK_METHOD, k: float = BOX_PICK_K, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    df, zone = prepare(pd.read_csv(data_dir / CSV_NAME), method=box, box_k=k)
+    meta = T.ChartMeta(week_label=T.week_label_from_dir(data_dir),
+                       n_matches=total_matches_from_hero_rows(df["total_matches"]), min_n=MIN_N)
+    return {Path(OUTPUT_NAME).stem: lambda progress=1.0, highlight=None: render(
+        df, zone, meta, progress=progress, highlight=highlight)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -302,15 +335,10 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
-    raw = pd.read_csv(data_dir / CSV_NAME)
-    df, box = prepare(raw, method=args.box, box_k=args.k)
-    meta = T.ChartMeta(week_label=T.week_label_from_dir(data_dir),
-                       n_matches=total_matches_from_hero_rows(df["total_matches"]), min_n=MIN_N)
-
-    highlight = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
-    fig = render(df, box, meta, progress=args.progress, highlight=highlight)
-    out = Path(args.out) if args.out else data_dir / "graphs" / OUTPUT_NAME
-    T.save_card(fig, out)
+    (name, draw), = cards(data_dir, args.box, args.k).items()
+    out = Path(args.out) if args.out else data_dir / "graphs" / f"{name}.png"
+    T.save_card(draw(args.progress, T.parse_names(args.highlight)), out)
+    df, box = prepare(pd.read_csv(data_dir / CSV_NAME), method=args.box, box_k=args.k)
     print(f"Saved {out}  | balanced zone: pick {box['x0']:.1f}–{box['x1']:.1f}%, "
           f"{int(df['in_box'].sum())} heroes inside")
 

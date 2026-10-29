@@ -19,6 +19,7 @@ from matplotlib.ticker import FuncFormatter, MultipleLocator
 
 import theme as T
 from chart_stats import wilson_ci
+from chart_stats import Insight, wr_confidence
 
 # --- CONFIG ------------------------------------------------------------------
 CSV_NAME = "hero_type_diff_winrate.csv"
@@ -192,6 +193,30 @@ def render(df: pd.DataFrame, meta: T.ChartMeta, progress: float = 1.0,
 
 
 # --- CLI ---------------------------------------------------------------------
+def insights(data_dir: Path, **_) -> list[Insight]:
+    """The most extreme reliable stacking result per archetype; insights.py keeps the strongest."""
+    df = prepare(pd.read_csv(data_dir / CSV_NAME))
+    df = df[df["shown"]].assign(conf=lambda d: wr_confidence(d["wr"], d["n"]))
+    df = df[(df["wr_hi"] < 50) | (df["wr_lo"] > 50)]
+    out = []
+    for htype, g in df.groupby("hero_type"):
+        r = g.loc[(g["wr"] - 50).abs().idxmax()]
+        plural = "marksmen" if htype == "marksman" else f"{htype}s"
+        out.append(Insight(Path(OUTPUT_NAME).stem, "stacking", highlight=(htype,),
+                           headline=f"Teams with {int(r['diff'])} more {plural} than the enemy win {r['wr']:.1f}%",
+                           detail=f"{int(r['n']):,} matches; 95% range {r['wr_lo']:.1f}–{r['wr_hi']:.1f}%",
+                           effect=abs(r["wr"] - 50), confidence=float(r["conf"])))
+    return out
+
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    df = prepare(pd.read_csv(data_dir / CSV_NAME))
+    meta = T.ChartMeta(week_label=T.week_label_from_dir(data_dir), min_n=MIN_BUCKET_N,
+                       min_n_unit="matches per point")
+    return {Path(OUTPUT_NAME).stem: lambda progress=1.0, highlight=None: render(df, meta, progress=progress,
+                                                                                 highlight=highlight)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -201,13 +226,11 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
+    highlight = T.parse_names(args.highlight)
+    (name, draw), = cards(data_dir).items()
+    out = Path(args.out) if args.out else data_dir / "graphs" / f"{name}.png"
+    T.save_card(draw(args.progress, highlight), out)
     df = prepare(pd.read_csv(data_dir / CSV_NAME))
-    meta = T.ChartMeta(week_label=T.week_label_from_dir(data_dir), min_n=MIN_BUCKET_N,
-                       min_n_unit="matches per point")
-    highlight = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
-    fig = render(df, meta, progress=args.progress, highlight=highlight)
-    out = Path(args.out) if args.out else data_dir / "graphs" / OUTPUT_NAME
-    T.save_card(fig, out)
     hidden = df[~df["shown"]]
     print(f"Saved {out}  | hidden buckets (<{MIN_BUCKET_N} matches): "
           + ", ".join(f"{r.hero_type}+{int(r['diff'])}({int(r.n)})" for _, r in hidden.iterrows()))

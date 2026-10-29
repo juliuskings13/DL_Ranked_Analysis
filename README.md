@@ -4,7 +4,7 @@ An end-to-end data pipeline that ingests every week of global **Deadlock** ranke
 stores them in PostgreSQL, transforms them with SQL, and renders publication-ready charts
 for weekly YouTube analysis videos ([@eReys13](https://www.youtube.com/@eReys13)).
 
-Each weekly run covers roughly **100,000 ranked matches** (about 1.1M player rows).
+Each weekly run covers roughly **90,000 ranked matches** (about 1.1M player rows).
 
 <!-- Add 2–3 of your best charts here, e.g.:
 ![Pick rate vs win rate](docs/examples/pick_rate_winrate_scatter.png)
@@ -28,7 +28,8 @@ flowchart LR
 | Validate | `validate_week.py` | Data-quality gate: unknown heroes, incomplete matches, inconsistent winners, duplicate heroes, duration mismatches, roster coverage. Non-zero exit stops the pipeline |
 | Transform | `query_transform.py` | Stages the week's complete matches once in temp tables, then runs every export against them (win rates, duo synergies, archetype differentials and matchups, duration histograms, comp frequency) |
 | Orchestrate | `run_pipeline.py` | Runs heroes → ingest → validate → transform → charts for a week; stops at the first failing stage and can resume with `--from` |
-| Visualize | `gen_visuals.py` + one script per chart | Renders every chart for the target week |
+| Visualize | `gen_visuals.py` + one script per chart, `animate.py` | Renders every chart for the target week as 1080×1080 cards; `animate.py` turns any card into a video clip (build-in, hold, highlight beats) piped to ffmpeg |
+| Insights | `insights.py` | Each chart script reports its findings as data (effect size + confidence); ranks them, merges findings per hero, and writes the week's voiceover outline (`insights.md`) plus a matching `animate.py` scenes CSV |
 | Shared | `db_config.py`, `pipeline_common.py`, `theme.py`, `chart_stats.py` | DB settings from env (UTC sessions); schema, week math and bulk-load helpers; card layout & palette; statistics (Wilson CIs, sample thresholds, pick rate) |
 
 ## Data model
@@ -90,9 +91,10 @@ not committed; the ingest scripts recreate them.
 
 ## Roadmap
 
-- [ ] Week-over-week deltas and an automated tier list
-- [ ] `insights.py`: rank the week's findings by effect size × confidence
-- [ ] Animated chart renders (every chart already takes a `progress` parameter) piped to ffmpeg
+- [x] Week-over-week deltas and an automated tier list (power score: win-rate edge × meta presence)
+- [x] `insights.py`: rank the week's findings by effect size × confidence
+- [x] Animated chart renders piped to ffmpeg (`animate.py`)
+- [ ] Win rate by rank bracket (skill floor) as a power-score input
 - [ ] pytest coverage for SQL transforms and stats helpers; GitHub Actions CI
 
 ## Data & attribution

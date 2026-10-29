@@ -28,6 +28,7 @@ Usage: python3 hero_strength_and_scaling.py [week_dir] [--highlight "Haze,Lady G
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import matplotlib.colors as mcolors
 import numpy as np
@@ -38,6 +39,7 @@ from matplotlib.ticker import FuncFormatter, MultipleLocator
 import theme as T
 from chart_stats import (DURATION_BRACKETS, _bracket_edges, duration_summary, load_hero_meta,
                          total_matches_from_hero_rows, wilson_ci)
+from chart_stats import Insight, normal_cdf
 from pick_rate_winrate_scatter import place_labels
 
 BRACKETS = DURATION_BRACKETS
@@ -308,6 +310,50 @@ def render_heatmap(values: pd.DataFrame, n: pd.DataFrame, dist: pd.DataFrame, ht
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    """The clearest late-game and early-game heroes (win rate after vs before the median length)."""
+    dur, _, heroes = load(data_dir)
+    summ = duration_summary(data_dir)
+    t = phase_table(dur, summ["early_weights"], summ["late_weights"])
+    t = t[(t["early_n"] >= MIN_PHASE_N) & (t["late_n"] >= MIN_PHASE_N)].copy()
+    se = np.hypot((t["early_hi"] - t["early_lo"]) / 3.92, (t["late_hi"] - t["late_lo"]) / 3.92)
+    t["conf"] = normal_cdf(t["delta"].abs() / se)
+    cut = fmt_min(summ["median"])
+    out = []
+    for kind, r in (("late_scaler", t.loc[t["delta"].idxmax()]), ("early_hero", t.loc[t["delta"].idxmin()])):
+        late = kind == "late_scaler"
+        out.append(Insight("hero_early_vs_late", kind, hero=r["hero_name"], highlight=(r["hero_name"],),
+                           headline=f"{r['hero_name']} {'gets stronger' if late else 'falls off'} the longer games go: "
+                                    f"{r['early_wr']:.1f}% before {cut}, {r['late_wr']:.1f}% after",
+                           detail=f"{abs(r['delta']):.1f}-point swing between short and long games",
+                           effect=abs(r["delta"]), confidence=float(r["conf"])))
+    return out
+
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    dur, dist, heroes = load(data_dir)
+    summ = duration_summary(data_dir)
+    solo = dict(zip(heroes["hero_name"], heroes["winrate"]))
+    n_matches = total_matches_from_hero_rows(heroes["total_matches"])
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches)
+    t = phase_table(dur, summ["early_weights"], summ["late_weights"])
+    out = {"hero_early_vs_late": lambda progress=1.0, highlight=None: render_early_late(
+        t, summ, solo, meta, progress, highlight)}
+
+    wr, delta, n = bracket_matrices(dur)
+    meta_h = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches, min_n=MIN_CELL_N,
+                         min_n_unit="games per cell (hatched = fewer)")
+    for htype in T.ARCHETYPE_ORDER:
+        if (heroes["hero_type"] == htype).any():
+            out[f"hero_duration_winrate_{htype}"] = (
+                lambda progress=1.0, highlight=None, h=htype: render_heatmap(
+                    wr, n, dist, h, summ, meta_h, heroes, "winrate", progress, highlight))
+            out[f"hero_duration_scaling_{htype}"] = (
+                lambda progress=1.0, highlight=None, h=htype: render_heatmap(
+                    delta, n, dist, h, summ, meta_h, heroes, "scaling", progress, highlight))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -317,25 +363,8 @@ def main() -> None:
 
     data_dir = T.resolve_target_dir(args.week_dir)
     out = data_dir / "graphs"
-    dur, dist, heroes = load(data_dir)
+    T.save_cards(cards(data_dir), out, args.progress, T.parse_names(args.highlight))
     summ = duration_summary(data_dir)
-    solo = dict(zip(heroes["hero_name"], heroes["winrate"]))
-    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
-    n_matches = total_matches_from_hero_rows(heroes["total_matches"])
-
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches)
-    t = phase_table(dur, summ["early_weights"], summ["late_weights"])
-    T.save_card(render_early_late(t, summ, solo, meta, args.progress, hl), out / "hero_early_vs_late.png")
-
-    wr, delta, n = bracket_matrices(dur)
-    meta_h = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches, min_n=MIN_CELL_N,
-                         min_n_unit="games per cell (hatched = fewer)")
-    for htype in T.ARCHETYPE_ORDER:
-        if (heroes["hero_type"] == htype).any():
-            T.save_card(render_heatmap(wr, n, dist, htype, summ, meta_h, heroes, "winrate", args.progress, hl),
-                        out / f"hero_duration_winrate_{htype}.png")
-            T.save_card(render_heatmap(delta, n, dist, htype, summ, meta_h, heroes, "scaling", args.progress, hl),
-                        out / f"hero_duration_scaling_{htype}.png")
     print(f"Saved duration cards to {out}  (split: {summ['mode']}, early < {summ['early_cut']:.1f} min, "
           f"late > {summ['late_cut']:.1f} min; IQR {summ['q1']:.1f}–{summ['q3']:.1f})")
 

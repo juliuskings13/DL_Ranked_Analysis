@@ -278,8 +278,11 @@ def hero_deltas(now_dir, prev_dir, z: float = 1.96) -> pd.DataFrame:
     With ~40 heroes, expect about 2 heroes per week to look "clear" by chance alone, so
     rank by p_change rather than trusting every flag. Heroes missing last week get
     status "new" and NaN deltas."""
-    now = add_power(_with_wins(load_hero_meta(now_dir)))
-    prev = add_power(_with_wins(load_hero_meta(prev_dir)))
+    now_raw, prev_raw = _with_wins(load_hero_meta(now_dir)), _with_wins(load_hero_meta(prev_dir))
+    # bans only count when both weeks have them; otherwise the formula change itself would move tiers
+    both_bans = all("ban_rate" in d and d["ban_rate"].notna().any() for d in (now_raw, prev_raw))
+    bw = BAN_WEIGHT if both_bans else 0.0
+    now, prev = add_power(now_raw, ban_weight=bw), add_power(prev_raw, ban_weight=bw)
     for d in (now, prev):
         d["rank"] = d["power"].rank(ascending=False, method="min").astype(int)
         if "ban_rate" not in d:
@@ -306,4 +309,43 @@ def hero_deltas(now_dir, prev_dir, z: float = 1.96) -> pd.DataFrame:
     tier_prev = out["tier_prev"].map(lambda t: TIER_NAMES.index(t) if isinstance(t, str) else np.nan)
     out["tier_change"] = tier_now - tier_prev                  # + = moved up
     out["status"] = np.where(out["games_prev"].isna(), "new", "returning")
+    out.attrs["ban_weight"] = bw
+    # what moved the power score: the win-rate change at last week's presence, and the rest
+    w_prev = out["power_prev"] / (out["winrate_prev"] - 50).where(out["winrate_prev"] != 50)
+    out["delta_from_wr"] = (out["winrate"] - out["winrate_prev"]) * w_prev.fillna(1.0)
+    out["delta_from_presence"] = out["power_delta"] - out["delta_from_wr"]
     return out.sort_values("power", ascending=False).reset_index(drop=True)
+
+
+# =============================================================================
+# INSIGHTS  (each chart script's insights() returns these; insights.py ranks them)
+# =============================================================================
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Insight:
+    """One finding, as data. `effect` is the size of the finding in win-rate points where that
+    makes sense (minutes for match length); `confidence` is how sure we are it's real (0.5-1).
+    `highlight` = names animate.py should highlight on `card` (heroes or archetypes)."""
+    card: str
+    kind: str
+    headline: str
+    detail: str = ""
+    highlight: tuple = ()
+    effect: float = 0.0
+    confidence: float = 1.0
+    tags: tuple = ()
+    hero: str | None = None            # main hero, used to merge several findings about one hero
+    context: bool = False              # background fact for the video, not a ranked story
+    also: list = field(default_factory=list)
+
+
+def wr_confidence(wr, n):
+    """How sure we are a win rate (percent) is really above / below 50%, from its sample size."""
+    se = np.sqrt(0.25 / np.asarray(n, float)) * 100
+    return normal_cdf(np.abs(np.asarray(wr, float) - 50) / se)
+
+
+def confidence_label(c: float) -> str:
+    return "very likely real" if c >= 0.99 else "likely real" if c >= 0.95 else "could be noise"

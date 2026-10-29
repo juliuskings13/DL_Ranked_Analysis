@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 import theme as T
-from chart_stats import TIER_BANDS, add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
+from chart_stats import Insight, TIER_BANDS, add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
 
 Z_BAND = 2.58            # 99% of noise-only outcomes fall inside the band
 ICON_PX = 50
@@ -125,6 +125,14 @@ def render(df: pd.DataFrame, band: dict, meta: T.ChartMeta, progress: float = 1.
                     path_effects=T.STROKE)
     return fig
 
+
+def insights(data_dir: Path, **_) -> list[Insight]:
+    df, band = prepare(data_dir)
+    n_in, n = int(df["in_band"].sum()), len(df)
+    return [Insight("deadlock_balance_chart", "balance", context=True,
+                    headline=f"{n_in} of {n} heroes are balanced",
+                    detail=f"Inside the {band['lo']:.1f}–{band['hi']:.1f}% range that chance alone would produce; "
+                           f"{n - n_in} are imbalanced for real")]
 
 def cards(data_dir: Path, **_) -> dict:
     """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""

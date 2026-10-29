@@ -13,12 +13,14 @@ Usage: python3 comp_uniqueness.py [week_dir]
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pandas as pd
 from matplotlib.patches import Rectangle
 
 import theme as T
 from chart_stats import load_hero_meta, total_matches_from_hero_rows
+from chart_stats import Insight
 
 GROUPS = [  # (label, buckets from the SQL, color)
     ("seen once", ["single-occurrence"], "#2f7d6d"),
@@ -96,6 +98,22 @@ def render(g: pd.DataFrame, stats: dict, meta: T.ChartMeta, progress: float = 1.
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    g, stats = prepare(data_dir)
+    once = float(g.iloc[0]["comps_pct"]) * 100
+    return [Insight("comp_uniqueness", "comps", context=True,
+                    headline=f"{once:.0f}% of 6-hero team comps were played exactly once",
+                    detail=f"{stats['comps']:,} different comps across {stats['lineups']:,} team line-ups; "
+                           f"{stats['repeat_20']} comps were played 20+ times")]
+
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    g, stats = prepare(data_dir)
+    heroes = load_hero_meta(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(heroes["total_matches"]))
+    return {"comp_uniqueness": lambda progress=1.0, highlight=None: render(g, stats, meta, progress)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -103,12 +121,8 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
-    g, stats = prepare(data_dir)
-    heroes = load_hero_meta(data_dir)
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(heroes["total_matches"]))
-    out = data_dir / "graphs" / "comp_uniqueness.png"
-    T.save_card(render(g, stats, meta, args.progress), out)
-    print(f"Saved {out}")
+    for p in T.save_cards(cards(data_dir), data_dir / "graphs", args.progress):
+        print(f"Saved {p}")
 
 
 if __name__ == "__main__":

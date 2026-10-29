@@ -29,6 +29,7 @@ from matplotlib.ticker import FuncFormatter, MultipleLocator
 
 import theme as T
 from chart_stats import LONG_GAME_MIN, SHORT_GAME_MIN, duration_summary
+from chart_stats import Insight, previous_week_dir
 
 IQR_COLOR = T.GOLD           # middle 50%
 MID75_COLOR = "#fb923c"      # middle 75% — orange, between the gold IQR and the teal tails
@@ -190,6 +191,38 @@ def render(s: dict, meta: T.ChartMeta, progress: float = 1.0, cmp: dict | None =
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    s = duration_summary(data_dir)
+    out = [Insight("match_duration", "duration", context=True,
+                   headline=f"Half of all games last {s['q1']:.0f}–{s['q3']:.0f} minutes (median {s['median']:.1f})",
+                   detail=f"{s['short_share']:.0f}% end before {SHORT_GAME_MIN} min, "
+                          f"{s['long_share']:.0f}% go past {LONG_GAME_MIN} min")]
+    prev = previous_week_dir(data_dir)
+    if prev is not None:
+        try:
+            p = duration_summary(prev)
+        except FileNotFoundError:
+            return out
+        d = s["median"] - p["median"]
+        if abs(d) >= 0.5:      # tens of thousands of games: a half-minute shift is real
+            out.append(Insight("match_duration", "duration_change",
+                               headline=f"Games got {'longer' if d > 0 else 'shorter'}: median {p['median']:.1f} → "
+                                        f"{s['median']:.1f} min",
+                               detail=f"Middle 50% now {s['q1']:.0f}–{s['q3']:.0f} min "
+                                      f"(was {p['q1']:.0f}–{p['q3']:.0f})", effect=abs(d), confidence=0.99))
+    return out
+
+def cards(data_dir: Path, compare: str | None = None, label: str | None = None,
+          compare_label: str = "before the patch", **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    s = duration_summary(data_dir)
+    cmp = duration_summary(Path(compare)) if compare else None
+    label = label or T.week_label_from_dir(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), s["n"])
+    name = "match_duration_compare" if cmp else "match_duration"
+    return {name: lambda progress=1.0, highlight=None: render(s, meta, progress, cmp, label, compare_label)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -200,18 +233,14 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
+    T.save_cards(cards(data_dir, args.compare, args.label, args.compare_label), data_dir / "graphs", args.progress)
     s = duration_summary(data_dir)
-    cmp = duration_summary(Path(args.compare)) if args.compare else None
-    label = args.label or T.week_label_from_dir(data_dir)
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), s["n"])
-    name = "match_duration_compare.png" if cmp else "match_duration.png"
-    out = data_dir / "graphs" / name
-    T.save_card(render(s, meta, args.progress, cmp, label, args.compare_label), out)
     msg = (f"median {s['median']:.1f}, IQR {s['q1']:.1f}–{s['q3']:.1f}, "
            f"75% {s['p125']:.1f}–{s['p875']:.1f} ({s['source']})")
-    if cmp:
+    if args.compare:
+        cmp = duration_summary(Path(args.compare))
         msg += f"  vs {args.compare_label}: median {cmp['median']:.1f} ({s['median'] - cmp['median']:+.1f} min)"
-    print(f"Saved {out}  | {msg}")
+    print(f"Saved match duration card  | {msg}")
 
 
 if __name__ == "__main__":
