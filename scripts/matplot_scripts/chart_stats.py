@@ -55,11 +55,16 @@ def expected_pair_wr(wr_a_pct, wr_b_pct):
 
 
 def load_hero_meta(data_dir) -> pd.DataFrame:
-    """hero_winrates.csv with normalized columns: hero_name, hero_type, total_matches, winrate."""
+    """hero_winrates.csv with normalized columns: hero_name, hero_type, total_matches, winrate.
+    Adds ban_rate (percent of matches with recorded bans) from hero_bans.csv when it exists."""
     from pathlib import Path
     df = pd.read_csv(Path(data_dir) / "hero_winrates.csv")
     df.columns = df.columns.str.strip().str.lower()
     df["hero_type"] = df["hero_type"].str.strip().str.lower()
+    bans = Path(data_dir) / "hero_bans.csv"
+    if bans.exists():
+        b = pd.read_csv(bans)
+        df = df.merge(b[["hero_name", "ban_rate"]], on="hero_name", how="left")
     return df
 
 
@@ -116,7 +121,7 @@ def histogram_quantile(hist: pd.DataFrame, q: float) -> float:
 #   "median"    -> early = games shorter than the median match, late = longer (50% / 50%)
 #   "quartiles" -> early = shorter than Q1, late = longer than Q3 (extremes only, ~25% each)
 # Cut-offs are exact minutes, not rounded to the 5-min brackets (see bracket_weights).
-PHASE_SPLIT = "quartiles"
+PHASE_SPLIT = "median"
 SHORT_GAME_MIN, LONG_GAME_MIN = 30, 45     # fixed thresholds for the "% of short / long games" stats
 
 
@@ -178,3 +183,127 @@ def add_pick_rate(df: pd.DataFrame, n_col: str = "total_matches") -> pd.DataFram
     out = df.copy()
     out["pick_rate"] = out[n_col] / total_matches_from_hero_rows(out[n_col]) * 100
     return out
+
+
+# =============================================================================
+# TIERS  (single source of truth: balance chart zones, tier list, insights)
+# =============================================================================
+# (lower bound inclusive, upper bound exclusive, name), worst to best, win rate in percent
+TIER_BANDS = [(-np.inf, 46, "TRASH"), (46, 48, "WEAK"), (48, 49, "UNDER"), (49, 51, "BALANCED"),
+              (51, 52, "OVER"), (52, 54, "STRONG"), (54, np.inf, "GOD TIER")]
+TIER_NAMES = [name for _, _, name in TIER_BANDS]
+
+
+def tier_index(wr: float) -> int:
+    """0 = TRASH ... 6 = GOD TIER."""
+    for i, (lo, hi, _) in enumerate(TIER_BANDS):
+        if lo <= wr < hi:
+            return i
+    return len(TIER_BANDS) - 1
+
+
+def tier_of(wr: float) -> str:
+    return TIER_NAMES[tier_index(wr)]
+
+
+# =============================================================================
+# POWER SCORE  (what the tier list ranks by)
+# =============================================================================
+# Tier lists are about meta impact: a strong hero that is everywhere is oppressive, and those
+# are the heroes that get nerfed. Power scales a hero's win-rate edge by how present it is in
+# the meta, relative to the week's median hero:
+#     presence = pick rate + BAN_WEIGHT * ban rate
+#     power    = (win rate - 50) * (presence / median presence) ** POWER_ALPHA
+# A hero exactly as present as the median hero scores its win rate - 50, so power uses the same
+# tier cutoffs as win rate, shifted by 50 (STRONG = +2 to +4 points).
+# POWER_ALPHA: 0 = pure win rate, 1 = pure "extra wins it adds across all games".
+# BAN_WEIGHT: bans are recorded only for matches whose replay the API processed (15-50% of
+# ranked), so ban rates are an estimate from that sample and count at a reduced weight. Raise it
+# once ban coverage (validate_week.py, period_meta.json) is reliably high.
+POWER_ALPHA = 0.9
+BAN_WEIGHT = 0.25
+
+
+def add_power(df: pd.DataFrame, alpha: float = POWER_ALPHA, ban_weight: float = BAN_WEIGHT,
+              n_col: str = "total_matches") -> pd.DataFrame:
+    """Adds pick_rate (if missing), presence, power, power_se (points) and power tier columns.
+    Without a ban_rate column (older weeks), presence is the pick rate alone."""
+    out = df if "pick_rate" in df else add_pick_rate(df, n_col)
+    out = out.copy()
+    bans = out["ban_rate"].fillna(0) if "ban_rate" in out else 0.0
+    out["presence"] = out["pick_rate"] + ban_weight * bans
+    weight = (out["presence"] / out["presence"].median()) ** alpha
+    p = out["winrate"] / 100
+    out["power"] = (out["winrate"] - 50) * weight
+    out["power_se"] = np.sqrt(p * (1 - p) / out[n_col]) * 100 * weight   # win-rate noise only
+    out["tier"] = (out["power"] + 50).map(tier_of)
+    out["wr_tier"] = out["winrate"].map(tier_of)
+    return out
+
+
+# =============================================================================
+# WEEK-OVER-WEEK DELTAS
+# =============================================================================
+def normal_cdf(x):
+    """Standard normal CDF, elementwise (no scipy dependency)."""
+    from math import erf, sqrt
+    return np.vectorize(lambda v: 0.5 * (1 + erf(v / sqrt(2))) if np.isfinite(v) else np.nan)(np.asarray(x, float))
+
+
+def previous_week_dir(data_dir) -> "Path | None":
+    """week<N-1>_analysis next to week<N>_analysis, if it exists."""
+    import re
+    from pathlib import Path
+    data_dir = Path(data_dir)
+    m = re.search(r"week(\d+)", data_dir.name)
+    if not m:
+        return None
+    prev = data_dir.with_name(data_dir.name.replace(m.group(0), f"week{int(m.group(1)) - 1}", 1))
+    return prev if (prev / "hero_winrates.csv").exists() else None
+
+
+def _with_wins(df: pd.DataFrame) -> pd.DataFrame:
+    """Older exports only have the rounded win rate; rebuild wins from it when needed."""
+    if "wins" not in df.columns:
+        df = df.assign(wins=(df["winrate"] / 100 * df["total_matches"]).round())
+    return df
+
+
+def hero_deltas(now_dir, prev_dir, z: float = 1.96) -> pd.DataFrame:
+    """One row per hero in the current week, compared with prev_dir.
+    rank / tier come from the power score (see add_power); wr_tier is the plain win-rate tier.
+
+    wr_delta is in percentage points. Its 95% range uses the difference of two independent
+    proportions: SE = sqrt(p1(1-p1)/n1 + p2(1-p2)/n2). `clear` = the range excludes 0.
+    With ~40 heroes, expect about 2 heroes per week to look "clear" by chance alone, so
+    rank by p_change rather than trusting every flag. Heroes missing last week get
+    status "new" and NaN deltas."""
+    now = add_power(_with_wins(load_hero_meta(now_dir)))
+    prev = add_power(_with_wins(load_hero_meta(prev_dir)))
+    for d in (now, prev):
+        d["rank"] = d["power"].rank(ascending=False, method="min").astype(int)
+        if "ban_rate" not in d:
+            d["ban_rate"] = np.nan
+    cols = ["hero_name", "total_matches", "wins", "winrate", "pick_rate", "ban_rate", "presence",
+            "power", "power_se", "rank", "tier", "wr_tier"]
+    out = now[["hero_type"] + cols].merge(prev[cols], on="hero_name", how="left", suffixes=("", "_prev"))
+    out = out.rename(columns={"total_matches": "games", "total_matches_prev": "games_prev"})
+
+    p1, n1 = out["wins"] / out["games"], out["games"]
+    p0, n0 = out["wins_prev"] / out["games_prev"], out["games_prev"]
+    out["wr_delta"] = (p1 - p0) * 100
+    se = np.sqrt(p1 * (1 - p1) / n1 + p0 * (1 - p0) / n0) * 100
+    out["delta_lo"] = out["wr_delta"] - z * se
+    out["delta_hi"] = out["wr_delta"] + z * se
+    out["z"] = out["wr_delta"] / se
+    out["p_change"] = normal_cdf(out["z"].abs())        # how sure the change is real, either way
+    out["clear"] = (out["delta_lo"] > 0) | (out["delta_hi"] < 0)
+    out["pick_delta"] = out["pick_rate"] - out["pick_rate_prev"]
+    out["power_delta"] = out["power"] - out["power_prev"]
+    out["power_clear"] = out["power_delta"].abs() > z * np.sqrt(out["power_se"] ** 2 + out["power_se_prev"] ** 2)
+    out["rank_change"] = out["rank_prev"] - out["rank"]        # + = climbed
+    tier_now = out["tier"].map(TIER_NAMES.index)
+    tier_prev = out["tier_prev"].map(lambda t: TIER_NAMES.index(t) if isinstance(t, str) else np.nan)
+    out["tier_change"] = tier_now - tier_prev                  # + = moved up
+    out["status"] = np.where(out["games_prev"].isna(), "new", "returning")
+    return out.sort_values("power", ascending=False).reset_index(drop=True)

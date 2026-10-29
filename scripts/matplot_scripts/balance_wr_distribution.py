@@ -11,25 +11,20 @@ Usage: python3 balance_wr_distribution.py [week_dir] [--highlight "Victor,Mirage
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 import theme as T
-from chart_stats import add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
+from chart_stats import TIER_BANDS, add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
 
 Z_BAND = 2.58            # 99% of noise-only outcomes fall inside the band
 ICON_PX = 50
 DIM_ALPHA = 0.2
-# Tier zones: (lo, hi, name, tint color, tint strength × ZONE_TINT_ALPHA, label color).
-# Red deepens the further below 50% a tier is, green deepens above, gold marks balanced.
-TIERS = [(-np.inf, 46, "TRASH",    T.RED,   1.6, T.RED),
-         (46, 48,      "WEAK",     T.RED,   0.95, T.RED),
-         (48, 49,      "UNDER",    T.RED,   0.45, "#f4a3a3"),
-         (49, 51,      "BALANCED", T.GOLD,  1.0, T.GOLD),
-         (51, 52,      "OVER",     T.GREEN, 0.45, "#9be8bb"),
-         (52, 54,      "STRONG",   T.GREEN, 0.95, T.GREEN),
-         (54, np.inf,  "GOD TIER", T.GREEN, 1.6, T.GREEN)]
+# Tier zones: (lo, hi, name, tint color, tint strength × ZONE_TINT_ALPHA, label color),
+# from the shared definitions so this chart, the tier list and insights always agree.
+TIERS = [(lo, hi, name, *T.TIER_STYLE[name]) for lo, hi, name in TIER_BANDS]
 
 
 def prepare(data_dir) -> tuple[pd.DataFrame, dict]:
@@ -131,6 +126,14 @@ def render(df: pd.DataFrame, band: dict, meta: T.ChartMeta, progress: float = 1.
     return fig
 
 
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    df, band = prepare(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(df["total_matches"]))
+    return {"deadlock_balance_chart": lambda progress=1.0, highlight=None: render(df, band, meta, progress=progress,
+                                                                                    highlight=highlight)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -139,12 +142,9 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
+    T.save_cards(cards(data_dir), data_dir / "graphs", args.progress, T.parse_names(args.highlight))
     df, band = prepare(data_dir)
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(df["total_matches"]))
-    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
-    out = data_dir / "graphs" / "deadlock_balance_chart.png"
-    T.save_card(render(df, band, meta, progress=args.progress, highlight=hl), out)
-    print(f"Saved {out}  | band {band['lo']:.2f}–{band['hi']:.2f}%, {int(df['in_band'].sum())} heroes inside")
+    print(f"Saved balance chart  | band {band['lo']:.2f}–{band['hi']:.2f}%, {int(df['in_band'].sum())} heroes inside")
 
 
 if __name__ == "__main__":

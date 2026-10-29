@@ -4,7 +4,7 @@ An end-to-end data pipeline that ingests every week of global **Deadlock** ranke
 stores them in PostgreSQL, transforms them with SQL, and renders publication-ready charts
 for weekly YouTube analysis videos ([@eReys13](https://www.youtube.com/@eReys13)).
 
-Each weekly run covers roughly **90,000 ranked matches** (about 1.1M player rows).
+Each weekly run covers roughly **100,000 ranked matches** (about 1.1M player rows).
 
 <!-- Add 2–3 of your best charts here, e.g.:
 ![Pick rate vs win rate](docs/examples/pick_rate_winrate_scatter.png)
@@ -36,13 +36,14 @@ flowchart LR
 The source is the community API's ClickHouse warehouse, discovered with
 `db_table_schema_inspect.py`. Its `match_player` table is very wide (~170 columns, including
 nested arrays for per-minute stats, items, deaths and objectives). The pipeline keeps only what
-the analyses need, flattened into four local PostgreSQL tables:
+the analyses need, flattened into five local PostgreSQL tables:
 
 | Local table | Grain | Key columns |
 |---|---|---|
-| `match_player` | one row per player per match | `match_id`, `account_id`, `hero_id`, `team`, `won`, `start_time`, `duration_s`, rank badges, ~20 **optional** end-of-match stats (kills, net worth, damage, healing…) |
+| `match_player` | one row per player per match | `match_id`, `account_id`, `hero_id`, `team`, `won`, `start_time`, `duration_s`, rank badges, ~20 end-of-match stats (kills, net worth, damage, healing…) |
 | `match_hero_roster` | one row per match | `team0` / `team1` hero-id arrays, `winning_team`, `match_duration_s` |
 | `heroes` | one row per hero | `hero_id`, `name`, `hero_type` (archetype) |
+| `match_bans` | one row per match with recorded bans | `match_id`, `start_time`, `banned_hero_ids` (3 per ranked match). Only matches whose replay the API processed have bans (about 15–50% a day); `validate_week.py` reports the weekly coverage |
 | `patch_periods` | one row per analysis window | `period_name` (e.g. `Week_8`), `start_time`, `end_time` |
 
 Design choices:

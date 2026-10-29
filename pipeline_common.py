@@ -118,6 +118,15 @@ CREATE TABLE IF NOT EXISTS match_hero_roster (
 );
 CREATE INDEX IF NOT EXISTS match_hero_roster_start_time_idx ON match_hero_roster (start_time);
 
+-- Hero bans per match. The API only has them for matches whose replay it processed (roughly
+-- 15-50% of ranked matches); those have every ban, the rest have none, so they get no row here.
+CREATE TABLE IF NOT EXISTS match_bans (
+    match_id         BIGINT PRIMARY KEY,
+    start_time       TIMESTAMPTZ NOT NULL,
+    banned_hero_ids  SMALLINT[] NOT NULL
+);
+CREATE INDEX IF NOT EXISTS match_bans_start_time_idx ON match_bans (start_time);
+
 CREATE TABLE IF NOT EXISTS patch_periods (
     period_id   SMALLINT PRIMARY KEY,
     period_name VARCHAR(100) UNIQUE,

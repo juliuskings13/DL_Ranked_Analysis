@@ -5,6 +5,7 @@ ingest_dl_comm_api_parquet.py — weekly ranked-match ingest (main pipeline entr
     2. stream that week's RANKED player rows from the Deadlock API's public parquet files
        (DuckDB reads them over HTTP, pushing the date filter down so only matching row
        groups are downloaded) into match_player, in COPY batches
+       plus each match's hero bans into match_bans, when the API recorded them
     3. rebuild match_hero_roster for that week only, from complete matches
 
 Re-running a week is safe: inserts skip rows that already exist (primary keys), and the
@@ -122,12 +123,20 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
     # Cast the PARAMETERS to the column's own type so DuckDB never has to cast the column itself:
     # a cast on the column disables row-group skipping (the filter can't use the files' min/max
     # stats). The API's files currently store TIMESTAMP WITH TIME ZONE; older dumps used TIMESTAMP.
-    col_type = dict((r[0], r[1]) for r in src.execute("DESCRIBE match_player").fetchall())["start_time"]
+    cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
+    col_type = cols["start_time"]
     columns = COLUMNS + (STAT_EXPRESSIONS if with_stats else [])
-    log.info("Damage/healing stats: %s", "included (--with-stats)" if with_stats else "skipped (NULL)")
+    has_bans = "banned_hero_ids" in cols
+    log.info("Damage/healing stats: %s  |  bans: %s",
+             "included (--with-stats)" if with_stats else "skipped (NULL)",
+             "loading" if has_bans else "not in these files")
     select = ",\n            ".join(expr for _, expr in columns)
+    # bans ride along as one extra trailing column (empty list -> NULL = not recorded)
+    bans_expr = ("CASE WHEN len(mp.banned_hero_ids) > 0 THEN CAST(mp.banned_hero_ids AS SMALLINT[]) END"
+                 if has_bans else "NULL")
     query = f"""
-        SELECT {select}
+        SELECT {select},
+            {bans_expr} AS _bans
         FROM match_player mp
         WHERE mp.start_time >= CAST(? AS {col_type}) AND mp.start_time < CAST(? AS {col_type})
           AND (CAST(mp.match_mode AS VARCHAR) = 'Ranked' OR TRY_CAST(mp.match_mode AS INTEGER) = 4)
@@ -135,7 +144,8 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
     params = [start, end] if "ZONE" in col_type.upper() else [start.replace(tzinfo=None), end.replace(tzinfo=None)]
     cur = src.execute(query, params)
     names = [c for c, _ in columns]
-    total = 0
+    i_match, i_start = names.index("match_id"), names.index("start_time")
+    total = n_ban_matches = 0
     t0 = time.time()
     fetch_s = load_s = 0.0
     while True:
@@ -145,12 +155,19 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
         if not rows:
             break
         t = time.time()
-        total += copy_upsert(conn, "match_player", names, rows, key=["match_id", "account_id"])
+        bans = {r[i_match]: (r[i_match], r[i_start], r[-1]) for r in rows if r[-1]}   # one row per match
+        total += copy_upsert(conn, "match_player", names, (r[:-1] for r in rows), key=["match_id", "account_id"])
+        if bans:
+            n_ban_matches += copy_upsert(conn, "match_bans", ["match_id", "start_time", "banned_hero_ids"],
+                                         bans.values(), key=["match_id"])
         load_s += time.time() - t                 # time spent here = writing into PostgreSQL
         log.info("  match_player: %s rows (%.0f rows/s)  |  source %.0fs, postgres %.0fs so far",
                  f"{total:,}", total / max(time.time() - t0, 1e-6), fetch_s, load_s)
     log.info("Source (download/decode) %.0fs = %.0f%%, PostgreSQL writes %.0fs = %.0f%%",
              fetch_s, 100 * fetch_s / max(fetch_s + load_s, 1e-6), load_s, 100 * load_s / max(fetch_s + load_s, 1e-6))
+    if has_bans:
+        log.info("Bans recorded for %s matches (a match can span two batches, so this may count a few twice)",
+                 f"{n_ban_matches:,}")
     return total
 
 

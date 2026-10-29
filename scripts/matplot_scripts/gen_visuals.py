@@ -43,6 +43,7 @@ plotting_scripts = [
     "most_freq_comps.py",
     "comp_uniqueness.py",                      # replaces the pie + decay charts
     "match_duration.py",                       # match-length IQR (defines early / late game)
+    "week_over_week.py",                       # tier list + biggest movers, writes hero_deltas.csv
 ]
 
 failed = []

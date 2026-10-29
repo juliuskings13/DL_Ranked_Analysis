@@ -13,6 +13,8 @@ Checks
     duplicate_heroes    the same hero twice in one match
     duration_mismatch   players of one match disagreeing on match length
     roster_coverage     complete matches missing from match_hero_roster
+    ban_coverage        share of complete matches with recorded bans (info only: the API
+                        records bans only for matches whose replay it processed)
 
 Usage: python validate_week.py [--week N | --date YYYY-MM-DD] [--max-incomplete-pct 2.0]
 """
@@ -87,6 +89,13 @@ def main() -> int:
                 if status == "FAIL" or (status == "WARN" and worst == "PASS"):
                     worst = status
                 log.info("%-5s %-20s %s", status, name, f"{count:,}")
+            cur.execute("""
+                WITH complete AS (SELECT match_id FROM wk GROUP BY match_id
+                                  HAVING COUNT(*) = 12 AND COUNT(*) FILTER (WHERE LOWER(team) = 'team0') = 6)
+                SELECT COUNT(*), COUNT(b.match_id) FROM complete c LEFT JOIN match_bans b USING (match_id)""")
+            n_complete, n_bans = cur.fetchone()
+            log.info("INFO  %-20s %s of %s complete matches (%.1f%%)", "ban_coverage", f"{n_bans:,}",
+                     f"{n_complete:,}", 100 * n_bans / max(n_complete, 1))
     finally:
         conn.close()
     log.info("Result: %s", worst)

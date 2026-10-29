@@ -71,6 +71,15 @@ NEUTRAL = "#8a8f98"       # insufficient sample
 # Background zone tints (scatter quadrants, balance tiers, duration bands). One value so every
 # chart's zones read at the same strength; 0.15 is the level that's visible on video.
 ZONE_TINT_ALPHA = 0.15
+# Tier colors: (tint color, tint strength x ZONE_TINT_ALPHA, label color). Red deepens below 50%,
+# green deepens above, gold marks balanced. Tier boundaries live in chart_stats.TIER_BANDS.
+TIER_STYLE = {"TRASH":    ("#ef6363", 1.6, "#ef6363"),
+              "WEAK":     ("#ef6363", 0.95, "#ef6363"),
+              "UNDER":    ("#ef6363", 0.45, "#f4a3a3"),
+              "BALANCED": ("#ffd073", 1.0, "#ffd073"),
+              "OVER":     ("#41d67e", 0.45, "#9be8bb"),
+              "STRONG":   ("#41d67e", 0.95, "#41d67e"),
+              "GOD TIER": ("#41d67e", 1.6, "#41d67e")}
 
 ARCHETYPE_COLORS = {
     "brawler": "#22c55e",
@@ -335,13 +344,42 @@ def save_card(fig: Figure, path: Path) -> Path:
     return path
 
 
-def fig_to_image(fig: Figure) -> Image.Image:
-    """Render a figure to a PIL image (for animation frames / ffmpeg piping)."""
+def parse_names(text: str | None) -> set[str] | None:
+    """'Haze, Victor' -> {'Haze', 'Victor'}; empty -> None (no highlight)."""
+    names = {n.strip() for n in (text or "").split(",") if n.strip()}
+    return names or None
+
+
+def save_cards(cards: dict, out_dir: Path, progress: float = 1.0, highlight: set[str] | None = None) -> list[Path]:
+    """Save every card from a chart script's cards() dict as <out_dir>/<name>.png."""
+    return [save_card(draw(progress, highlight), out_dir / f"{name}.png") for name, draw in cards.items()]
+
+
+def card_layout(fig: Figure) -> list:
+    """Fit the card, then return every axes' position. Animation frames reuse the finished
+    card's layout: fitting each frame separately would make the plot jump around as labels
+    and icons appear (fit_card measures whatever is drawn at that moment)."""
     fit_card(fig)
+    return [ax.get_position().frozen() for ax in fig.axes]
+
+
+def fig_to_array(fig: Figure, layout: list | None = None) -> np.ndarray:
+    """Render a figure to an HxWx3 uint8 array (animation frames / ffmpeg piping).
+    layout: positions from card_layout() of the finished card; None = fit this figure."""
+    if layout is not None and len(layout) == len(fig.axes):
+        for ax, pos in zip(fig.axes, layout):
+            ax.set_position(pos)
+    else:
+        fit_card(fig)
     fig.canvas.draw()
-    img = Image.fromarray(np.asarray(fig.canvas.buffer_rgba())).convert("RGB")
+    arr = np.asarray(fig.canvas.buffer_rgba())[..., :3].copy()
     plt.close(fig)
-    return img
+    return arr
+
+
+def fig_to_image(fig: Figure, layout: list | None = None) -> Image.Image:
+    """Render a figure to a PIL image."""
+    return Image.fromarray(fig_to_array(fig, layout))
 
 
 # =============================================================================

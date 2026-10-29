@@ -80,6 +80,20 @@ EXPORTS: dict[str, tuple[str, tuple[str, ...]]] = {
                ROUND(100.0 * AVG(won::int), 2) AS winrate
         FROM wk_players GROUP BY hero_name, hero_type ORDER BY winrate DESC""", ("csv",)),
 
+    # power score: how often each hero is banned, among complete matches whose bans were recorded.
+    # Heroes banned in every match never appear in wk_players, so heroes come from the bans too.
+    "hero_bans": ("""
+        WITH recorded AS (SELECT b.match_id, b.banned_hero_ids FROM match_bans b JOIN wk_matches m USING (match_id)),
+             n AS (SELECT COUNT(*) AS n FROM recorded),
+             banned AS (SELECT u.hero_id, COUNT(DISTINCT r.match_id) AS banned_matches
+                        FROM recorded r CROSS JOIN LATERAL UNNEST(r.banned_hero_ids) AS u(hero_id) GROUP BY 1)
+        SELECT h.name AS hero_name, COALESCE(b.banned_matches, 0) AS banned_matches,
+               n.n AS matches_with_bans,
+               ROUND(100.0 * COALESCE(b.banned_matches, 0) / NULLIF(n.n, 0), 2) AS ban_rate
+        FROM heroes h CROSS JOIN n LEFT JOIN banned b USING (hero_id)
+        WHERE b.hero_id IS NOT NULL OR h.hero_id IN (SELECT DISTINCT hero_id FROM wk_players)
+        ORDER BY ban_rate DESC NULLS LAST, hero_name""", ("csv",)),
+
     # hero_duo_synergy_table: ALL duos with enough games (the chart ranks by lift, both directions)
     "hero_duo_synergies": ("""
         SELECT a.hero_name AS hero_name_a, b.hero_name AS hero_name_b,
@@ -224,6 +238,10 @@ def main() -> int:
             n_rows_all = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM wk_players")
             n_players = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM match_bans b JOIN wk_matches m USING (match_id)")
+            n_ban_matches = cur.fetchone()[0]
+            log.info("Bans recorded for %s of %s complete matches (%.0f%%)", f"{n_ban_matches:,}",
+                     f"{n_matches:,}", 100 * n_ban_matches / max(n_matches, 1))
             log.info("Staged %s complete matches (%s player rows) in %.1fs", f"{n_matches:,}",
                      f"{n_players:,}", time.time() - t0)
             if n_matches == 0:
@@ -251,7 +269,9 @@ def main() -> int:
 
         meta = {"period": name, "start": str(start), "end": str(end) if end else None,
                 "complete_matches": n_matches, "player_rows_in_period": n_rows_all,
-                "incomplete_rows_excluded": n_rows_all - 12 * n_matches}
+                "incomplete_rows_excluded": n_rows_all - 12 * n_matches,
+                "matches_with_bans": n_ban_matches,
+                "ban_coverage_pct": round(100 * n_ban_matches / max(n_matches, 1), 1)}
         (out_dir / "period_meta.json").write_text(json.dumps(meta, indent=2))
     finally:
         conn.close()
