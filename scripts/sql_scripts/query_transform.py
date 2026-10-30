@@ -50,12 +50,13 @@ BRACKET_SQL = """CASE WHEN {d} < 1200 THEN NULL
 # =============================================================================
 STAGING = [
     """CREATE TEMP TABLE wk_matches AS
-       SELECT match_id, start_time, match_duration_s AS duration_s, winning_team, team0, team1
+       SELECT match_id, start_time, match_duration_s AS duration_s, winning_team, team0, team1,
+              average_badge / 10 AS rank_tier          -- 1 Initiate ... 11 Eternus; NULL/0 = unknown
        FROM match_hero_roster
        WHERE start_time >= %(start)s AND (%(end)s::timestamptz IS NULL OR start_time < %(end)s)
          AND cardinality(team0) = 6 AND cardinality(team1) = 6""",
     """CREATE TEMP TABLE wk_players AS
-       SELECT mp.match_id, mp.team, mp.won, mp.hero_id, m.duration_s,
+       SELECT mp.match_id, mp.team, mp.won, mp.hero_id, m.duration_s, m.rank_tier,
               h.name AS hero_name, LOWER(h.hero_type) AS hero_type
        FROM match_player mp
        JOIN wk_matches m USING (match_id)
@@ -95,6 +96,17 @@ EXPORTS: dict[str, tuple[str, tuple[str, ...]]] = {
         FROM heroes h CROSS JOIN n LEFT JOIN banned b USING (hero_id)
         WHERE b.hero_id IS NOT NULL OR h.hero_id IN (SELECT DISTINCT hero_id FROM wk_players)
         ORDER BY ban_rate DESC NULLS LAST, hero_name""", ("csv",)),
+
+    # rank_performance: every hero's record in each rank tier of the match (average badge).
+    # One row per hero and tier, so the chart script can group tiers into brackets freely.
+    "hero_rank_winrates": ("""
+        SELECT hero_name, hero_type, rank_tier, COUNT(*) AS games, SUM(won::int) AS wins,
+               ROUND(100.0 * AVG(won::int), 2) AS winrate
+        FROM wk_players WHERE rank_tier >= 1
+        GROUP BY hero_name, hero_type, rank_tier ORDER BY hero_name, rank_tier""", ("csv",)),
+    "rank_tier_matches": ("""
+        SELECT rank_tier, COUNT(*) AS matches FROM wk_matches WHERE rank_tier >= 1
+        GROUP BY rank_tier ORDER BY rank_tier""", ("csv",)),
 
     # hero_duo_synergy_table: ALL duos with enough games (the chart ranks by lift, both directions)
     "hero_duo_synergies": ("""

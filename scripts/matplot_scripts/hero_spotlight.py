@@ -32,7 +32,10 @@ from chart_stats import (DURATION_BRACKETS, Insight, add_power, duration_summary
 GROUPS = 4
 TREND_WEEKS = 8
 MIN_BRACKET_N = 150          # brackets with fewer games are drawn hatched
-PARTNERS_BEST, PARTNERS_WORST = 3, 2
+PARTNERS_BEST, PARTNERS_WORST = 3, 3
+PARTNER_CONF = 0.80          # how sure the lift is real; below 95% the row is marked "could be noise"
+WORST_NEEDS_SUB50 = True     # a "worst" partner must also lose together (< 50%); False = any clear drop
+ICON_PX, TITLE_PX, SUBTITLE_PX = 136, 58, 24      # header (title and icon ~40% larger than other cards)
 TIER_COLOR = {name: style[2] for name, style in T.TIER_STYLE.items()}
 
 
@@ -71,9 +74,14 @@ def partners(duos: pd.DataFrame | None, hero: str) -> tuple[pd.DataFrame, pd.Dat
         return pd.DataFrame(), pd.DataFrame()
     mine = duos[(duos["hero_name_a"] == hero) | (duos["hero_name_b"] == hero)].copy()
     mine["partner"] = np.where(mine["hero_name_a"] == hero, mine["hero_name_b"], mine["hero_name_a"])
-    best = mine[mine["lift_lo"] > 0].nlargest(PARTNERS_BEST, "lift_lo")
-    worst = mine[mine["lift_hi"] < 0].nsmallest(PARTNERS_WORST, "lift_hi")
-    return best, worst
+    sure = mine["conf"] >= PARTNER_CONF
+    # "best" = they win together (over 50%) AND more than their solo win rates predict;
+    # "worst" = they lose together (under 50%) AND less than predicted
+    # ranked by win rate together, the number the card shows biggest
+    best = mine[sure & (mine["wr"] > 50) & (mine["lift"] > 0)].nlargest(PARTNERS_BEST, "wr")
+    losing = (mine["wr"] < 50) if WORST_NEEDS_SUB50 else True
+    worst = mine[sure & losing & (mine["lift"] < 0)].nsmallest(PARTNERS_WORST, "wr")
+    return best, worst.iloc[::-1]          # worst last
 
 
 def hero_groups(data_dir: Path, heroes: pd.DataFrame) -> list[list[str]]:
@@ -129,12 +137,18 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
 
     fig = T.plt.figure(figsize=(T.CARD_IN, T.CARD_IN), dpi=T.DPI, facecolor=T.BG)
     tier = r["tier"]
-    T.draw_header(fig, hero.upper(), f"{tier} · #{int(r['rank'])} of {data['n_heroes']} on the tier list · "
-                                     f"power {r['power']:+.1f}", alpha=p_frame)
+    icon_px = ICON_PX
+    title_px = T.fit_font_px([hero.upper()], T.CARD_PX * (1 - 2 * T.MARGIN_X) - icon_px - 30, max_px=TITLE_PX, min_px=34)
+    t = fig.text(T.MARGIN_X, 0.946, hero.upper(), color=T.GOLD, fontsize=T.px_to_pt(title_px), fontweight="bold",
+                 va="center", ha="left", alpha=p_frame)
+    T._mark_header_bottom(fig, t)
+    sub = fig.text(T.MARGIN_X, 0.884, f"{tier} · #{int(r['rank'])} of {data['n_heroes']} on the tier list · "
+                                      f"power {r['power']:+.1f}", color=T.TEXT_MUTED,
+                   fontsize=T.px_to_pt(SUBTITLE_PX), va="center", ha="left", alpha=p_frame)
+    T._mark_header_bottom(fig, sub)
     # big icon, top right
-    icon_px = 96
     icon = T.icon_any(hero, icon_px, T.archetype_color(r["hero_type"]), p_frame, wr=r["winrate"])
-    iax = fig.add_axes([1 - T.MARGIN_X - icon_px / T.CARD_PX, 1 - 0.022 - icon_px / T.CARD_PX,
+    iax = fig.add_axes([1 - T.MARGIN_X - icon_px / T.CARD_PX, 1 - 14 / T.CARD_PX - icon_px / T.CARD_PX,
                         icon_px / T.CARD_PX, icon_px / T.CARD_PX])
     iax._no_fit = True
     iax.imshow(icon)
@@ -230,24 +244,36 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
     best, worst = partners(data["duos"], hero)
     rows = [(rr, True) for _, rr in best.iterrows()] + [(rr, False) for _, rr in worst.iterrows()]
     n = max(len(rows), 1)
-    ax.set_ylim(PARTNERS_BEST + PARTNERS_WORST - 0.5, -0.5)          # fixed row height, rows from the top
+    slots = PARTNERS_BEST + PARTNERS_WORST
+    ax.set_ylim(slots - 0.5 + 0.3, -0.5)               # fixed row height, rows from the top
     if not rows:
-        ax.text(0.5, 1.5, "No duo with enough games\nis clearly above or below expectation",
+        ax.text(0.5, 2.5, "No duo with enough games is\nclearly better or worse together",
                 ha="center", va="center", color=T.TEXT_MUTED, fontsize=T.px_to_pt(15), alpha=p_frame)
+    if any(r_["conf"] < 0.95 for r_, _ in rows):
+        ax.text(0, -0.03, "faded = could be noise (less than 95% sure)", transform=ax.transAxes, ha="left",
+                va="top", color=T.TEXT_MUTED, fontsize=T.px_to_pt(12), alpha=p_frame)
+    if len(best) and len(worst):                        # divider between the good and the bad
+        ax.plot([0, 1], [len(best) - 0.5 + 0.15] * 2, color=T.DIVIDER, lw=1.2, ls=(0, (5, 4)), alpha=p_frame)
     for i, (rr, good) in enumerate(rows):
         t = T.ease_out_cubic(T.phase(p_part, i / (n + 1), i / (n + 1) + 0.4))
         if t <= 0:
             continue
-        col = T.GREEN if good else T.RED
-        T.add_icon(ax, T.icon_any(rr["partner"], 50, T.archetype_color(
-            data["d"].loc[rr["partner"], "hero_type"] if rr["partner"] in data["d"].index else ""), t,
-            wr=rr["wr"]), (0.09, i))
-        ax.text(0.2, i - 0.12, rr["partner"], ha="left", va="center", color=T.TEXT, alpha=t,
-                fontsize=T.px_to_pt(19), fontweight="bold")
-        ax.text(0.2, i + 0.22, f"{rr['wr']:.1f}% together · {int(rr['n']):,} games", ha="left", va="center",
-                color=T.TEXT_MUTED, alpha=t, fontsize=T.px_to_pt(13))
-        ax.text(1.0, i, f"{rr['lift']:+.1f}", ha="right", va="center", color=col, alpha=t,
-                fontsize=T.px_to_pt(24), fontweight="bold")
+        y = i + (0.3 if i >= len(best) and len(best) else 0)
+        noisy = rr["conf"] < 0.95
+        fade = 0.55 if noisy else 1.0
+        T.add_icon(ax, T.icon_any(rr["partner"], 44, T.archetype_color(
+            data["d"].loc[rr["partner"], "hero_type"] if rr["partner"] in data["d"].index else ""), t * fade,
+            wr=rr["wr"]), (0.07, y))
+        ax.text(0.17, y - 0.13, rr["partner"], ha="left", va="center", color=T.TEXT, alpha=t * fade,
+                fontsize=T.px_to_pt(18), fontweight="bold")
+        fade = 0.55 if noisy else 1.0
+        ax.text(0.17, y + 0.23, f"{int(rr['n']):,} games together", ha="left", va="center",
+                color=T.TEXT_MUTED, alpha=t * fade, fontsize=T.px_to_pt(13))
+        ax.text(1.0, y - 0.1, f"{rr['wr']:.1f}%", ha="right", va="center", color=T.wr_color(rr["wr"]),
+                alpha=t * fade, fontsize=T.px_to_pt(23), fontweight="bold")
+        ax.text(1.0, y + 0.27, f"{rr['lift']:+.1f} vs expected", ha="right", va="center",
+                color=T.GREEN if rr["lift"] > 0 else T.RED, alpha=t * fade, fontsize=T.px_to_pt(13),
+                fontweight="bold")
     return fig
 
 

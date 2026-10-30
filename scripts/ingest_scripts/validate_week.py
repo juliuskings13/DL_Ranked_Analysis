@@ -102,6 +102,12 @@ def main() -> int:
             n_complete, n_bans = cur.fetchone()
             log.info("INFO  %-20s %s of %s complete matches (%.1f%%)", "ban_coverage", f"{n_bans:,}",
                      f"{n_complete:,}", 100 * n_bans / max(n_complete, 1))
+            cur.execute("""SELECT COUNT(*), COUNT(*) FILTER (WHERE average_badge > 0) FROM match_hero_roster
+                           WHERE start_time >= %s AND start_time < %s""", (start, end))
+            n_rost, n_rank = cur.fetchone()
+            log.info("INFO  %-20s %s of %s complete matches (%.1f%%)%s", "rank_coverage", f"{n_rank:,}",
+                     f"{n_rost:,}", 100 * n_rank / max(n_rost, 1),
+                     "  <- re-run the ingest for this week to fill in ranks" if n_rost and n_rank == 0 else "")
     finally:
         conn.close()
     log.info("Result: %s", worst)

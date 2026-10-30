@@ -383,3 +383,57 @@ def hero_history(data_dir, weeks: int = 8) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True).rename(columns={"total_matches": "games"})
+
+
+# =============================================================================
+# RANK  (match average badge: tier = badge // 10)
+# =============================================================================
+RANK_TIER_NAMES = {1: "Initiate", 2: "Seeker", 3: "Acolyte", 4: "Sentinel", 5: "Mystic", 6: "Ritualist",
+                   7: "Emissary", 8: "Oracle", 9: "Phantom", 10: "Ascendant", 11: "Eternus"}
+# four brackets of roughly equal size (Week 13: 22% / 26% / 28% / 24% of ranked matches)
+RANK_BRACKETS = [("Initiate–Seeker", (1, 2)), ("Acolyte–Sentinel", (3, 4)),
+                 ("Mystic–Emissary", (5, 6, 7)), ("Oracle–Eternus", (8, 9, 10, 11))]
+LOW_BRACKETS, HIGH_BRACKETS = (0, 1), (2, 3)       # which brackets count as "low" and "high" rank
+
+
+def rank_bracket_of(tier: int) -> int | None:
+    for i, (_, tiers) in enumerate(RANK_BRACKETS):
+        if tier in tiers:
+            return i
+    return None
+
+
+def load_rank_winrates(data_dir) -> pd.DataFrame:
+    """hero_rank_winrates.csv grouped into RANK_BRACKETS: hero_name, hero_type, bracket (index),
+    bracket_name, games, wins, winrate, wr_lo, wr_hi, pick_rate (% of that bracket's matches)."""
+    from pathlib import Path
+    data_dir = Path(data_dir)
+    h = pd.read_csv(data_dir / "hero_rank_winrates.csv")
+    m = pd.read_csv(data_dir / "rank_tier_matches.csv")
+    h["bracket"] = h["rank_tier"].map(rank_bracket_of)
+    m["bracket"] = m["rank_tier"].map(rank_bracket_of)
+    g = h.dropna(subset=["bracket"]).groupby(["hero_name", "hero_type", "bracket"], as_index=False)[["games", "wins"]].sum()
+    matches = m.dropna(subset=["bracket"]).groupby("bracket")["matches"].sum()
+    g["bracket"] = g["bracket"].astype(int)
+    g["bracket_name"] = g["bracket"].map(lambda b: RANK_BRACKETS[b][0])
+    g["winrate"] = g["wins"] / g["games"] * 100
+    lo, hi = wilson_ci(g["wins"], g["games"])
+    g["wr_lo"], g["wr_hi"] = lo * 100, hi * 100
+    g["pick_rate"] = g["games"] / g["bracket"].map(matches) * 100
+    g["hero_type"] = g["hero_type"].str.lower()
+    return g
+
+
+def low_high_table(g: pd.DataFrame) -> pd.DataFrame:
+    """Per hero: pooled win rate in low-rank and high-rank brackets, in the column names the shared
+    split scatter uses (early_* = low rank, late_* = high rank), plus the change and its confidence."""
+    def pooled(brackets, tag):
+        s = g[g["bracket"].isin(brackets)].groupby(["hero_name", "hero_type"])[["games", "wins"]].sum()
+        lo, hi = wilson_ci(s["wins"], s["games"])
+        return pd.DataFrame({f"{tag}_wr": s["wins"] / s["games"] * 100, f"{tag}_n": s["games"],
+                             f"{tag}_lo": lo * 100, f"{tag}_hi": hi * 100})
+    t = pooled(LOW_BRACKETS, "early").join(pooled(HIGH_BRACKETS, "late"), how="inner").reset_index()
+    t["delta"] = t["late_wr"] - t["early_wr"]
+    se = np.hypot((t["early_hi"] - t["early_lo"]) / 3.92, (t["late_hi"] - t["late_lo"]) / 3.92)
+    t["conf"] = normal_cdf(t["delta"].abs() / se)
+    return t

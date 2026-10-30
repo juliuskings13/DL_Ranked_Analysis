@@ -68,6 +68,9 @@ COLUMNS: list[tuple[str, str]] = [
     ("average_badge_team1", "mp.average_badge_team1"),
     ("mvp_rank", "mp.mvp_rank"),
 ]
+# rank columns: optional per file set (older dumps may lack them); re-ingesting a week fills them in
+RANK_COLUMNS = [("average_badge", "average_badge"), ("player_rank", "player_rank_initial_display_rank")]
+RANK_UPDATE = "DO UPDATE SET average_badge = EXCLUDED.average_badge, player_rank = EXCLUDED.player_rank"
 STAT_EXPRESSIONS = [(c, f'CAST(list_max(mp."stats.{c}") AS INTEGER)') for c in STAT_COLUMNS]
 DUCKDB_THREADS = int(os.environ.get("DUCKDB_THREADS", "16"))   # remote reads wait on the network:
                                                                 # more parallel requests than CPU cores helps
@@ -126,7 +129,8 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
     # stats). The API's files currently store TIMESTAMP WITH TIME ZONE; older dumps used TIMESTAMP.
     cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
     col_type = cols["start_time"]
-    columns = COLUMNS + (STAT_EXPRESSIONS if with_stats else [])
+    rank = [(c, f"mp.{src_col}" if src_col in cols else "NULL") for c, src_col in RANK_COLUMNS]
+    columns = COLUMNS + rank + (STAT_EXPRESSIONS if with_stats else [])
     has_bans = "banned_hero_ids" in cols
     log.info("Damage/healing stats: %s  |  bans: %s",
              "included (--with-stats)" if with_stats else "skipped (NULL)",
@@ -157,7 +161,9 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
             break
         t = time.time()
         bans = {r[i_match]: (r[i_match], r[i_start], r[-1]) for r in rows if r[-1]}   # one row per match
-        total += copy_upsert(conn, "match_player", names, (r[:-1] for r in rows), key=["match_id", "account_id"])
+        # existing rows only get their rank columns refreshed (backfills weeks ingested before they existed)
+        total += copy_upsert(conn, "match_player", names, (r[:-1] for r in rows), key=["match_id", "account_id"],
+                             conflict=RANK_UPDATE)
         if bans:
             n_ban_matches += copy_upsert(conn, "match_bans", ["match_id", "start_time", "banned_hero_ids"],
                                          bans.values(), key=["match_id"])
@@ -188,6 +194,7 @@ def rebuild_rosters(conn, start: datetime, end: datetime) -> tuple[int, int]:
                     ARRAY_AGG(hero_id ORDER BY hero_id) FILTER (WHERE LOWER(team) = 'team1') AS team1,
                     MAX(average_badge_team0) AS average_badge_team0,
                     MAX(average_badge_team1) AS average_badge_team1,
+                    MAX(average_badge)       AS average_badge,
                     COUNT(*)                                       AS n_players,
                     COUNT(DISTINCT team) FILTER (WHERE won)        AS n_winning_teams
                 FROM match_player
@@ -195,9 +202,9 @@ def rebuild_rosters(conn, start: datetime, end: datetime) -> tuple[int, int]:
                 GROUP BY match_id
             ), inserted AS (
                 INSERT INTO match_hero_roster (match_id, start_time, match_duration_s, winning_team,
-                                               team0, team1, average_badge_team0, average_badge_team1)
+                                               team0, team1, average_badge_team0, average_badge_team1, average_badge)
                 SELECT match_id, start_time, match_duration_s, winning_team,
-                       team0, team1, average_badge_team0, average_badge_team1
+                       team0, team1, average_badge_team0, average_badge_team1, average_badge
                 FROM per_match
                 WHERE n_players = 12 AND n_winning_teams = 1
                   AND cardinality(team0) = 6 AND cardinality(team1) = 6

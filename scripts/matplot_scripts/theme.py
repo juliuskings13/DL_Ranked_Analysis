@@ -43,8 +43,8 @@ HEADER_TITLE_Y = 0.950
 HEADER_SUB_Y = 0.908
 HEADER_LEGEND_Y = 0.872
 PLOT_RECT = (0.115, 0.125, 0.850, 0.715)   # starting box only; fit_card() resizes it to fill the card
-FOOTER_LINE_Y = 0.052
-FOOTER_TEXT_Y = 0.024
+FOOTER_LINE_Y = 0.025                       # credits strip: ~27px tall
+FOOTER_TEXT_Y = 0.0115
 MARGIN_X = 0.037                            # ~40px side margins
 
 
@@ -211,6 +211,11 @@ class ChartMeta:
 # =============================================================================
 # CARD FRAME
 # =============================================================================
+def margin_x(fig: Figure) -> float:
+    """Side margin as a figure fraction; a card can tighten it with fig._margin_x."""
+    return getattr(fig, "_margin_x", MARGIN_X)
+
+
 def new_card() -> tuple[Figure, plt.Axes]:
     fig = plt.figure(figsize=(CARD_IN, CARD_IN), dpi=DPI, facecolor=BG)
     ax = fig.add_axes(PLOT_RECT)
@@ -231,13 +236,14 @@ def _mark_header_bottom(fig: Figure, artist) -> None:
 
 
 def draw_header(fig: Figure, title: str, subtitle: str | None = None, alpha: float = 1.0) -> None:
-    width = (1 - 2 * MARGIN_X) * CARD_PX
+    mx = margin_x(fig)
+    width = (1 - 2 * mx) * CARD_PX
     title_px = fit_font_px([title], width, max_px=SIZE_TITLE, min_px=26)   # long titles shrink to fit
-    t = fig.text(MARGIN_X, HEADER_TITLE_Y, title, color=GOLD, fontsize=px_to_pt(title_px),
+    t = fig.text(mx, HEADER_TITLE_Y, title, color=GOLD, fontsize=px_to_pt(title_px),
                  fontweight="bold", va="center", ha="left", alpha=alpha)
     _mark_header_bottom(fig, t)
     if subtitle:
-        s = fig.text(MARGIN_X, HEADER_SUB_Y, subtitle, color=TEXT_MUTED,
+        s = fig.text(mx, HEADER_SUB_Y, subtitle, color=TEXT_MUTED,
                      fontsize=px_to_pt(SIZE_SUBTITLE), va="center", ha="left", alpha=alpha)
         _mark_header_bottom(fig, s)
 
@@ -301,17 +307,27 @@ def draw_kpi_row(fig: Figure, items: list[tuple], height_px: float | None = None
 
 
 def draw_footer(fig: Figure, meta: ChartMeta, alpha: float = 1.0) -> None:
-    fig.add_artist(plt.Line2D([MARGIN_X, 1 - MARGIN_X], [FOOTER_LINE_Y] * 2,
+    mx = margin_x(fig)
+    fig.add_artist(plt.Line2D([mx, 1 - mx], [FOOTER_LINE_Y] * 2,
                               color=DIVIDER, linewidth=1, transform=fig.transFigure, alpha=alpha))
     fs = px_to_pt(SIZE_FOOTER)
-    fig.text(MARGIN_X, FOOTER_TEXT_Y, meta.left_text(), color=FOOTER, fontsize=fs,
+    fig.text(mx, FOOTER_TEXT_Y, meta.left_text(), color=FOOTER, fontsize=fs,
              va="center", ha="left", alpha=alpha)
-    fig.text(1 - MARGIN_X, FOOTER_TEXT_Y, f"Analysis by {meta.handle}", color=FOOTER,
+    fig.text(1 - mx, FOOTER_TEXT_Y, f"Analysis by {meta.handle}", color=FOOTER,
              fontsize=fs, va="center", ha="right", alpha=alpha)
 
 
 GAP_BELOW_HEADER = 0.022   # ~24px between the header block and the content
 GAP_ABOVE_FOOTER = 0.018   # ~19px between the content and the footer rule
+
+
+def content_bounds(fig: Figure) -> tuple[float, float]:
+    """(bottom, top) of the content area as figure fractions. A card can override either edge:
+    fig._content_bottom (e.g. to put its own notes right above the footer rule) and
+    fig._gap_below_header (a tighter gap under the header)."""
+    top = getattr(fig, "_content_top", 0.97) - getattr(fig, "_gap_below_header", GAP_BELOW_HEADER)
+    bottom = getattr(fig, "_content_bottom", FOOTER_LINE_Y + GAP_ABOVE_FOOTER)
+    return bottom, top
 
 
 def fit_card(fig: Figure, iterations: int = 4) -> None:
@@ -322,9 +338,8 @@ def fit_card(fig: Figure, iterations: int = 4) -> None:
     that didn't need y-axis labels. Runs automatically in save_card() / fig_to_image()."""
     renderer = fig.canvas.get_renderer()
     W, H = fig.bbox.width, fig.bbox.height
-    left, right = MARGIN_X, 1 - MARGIN_X
-    bottom = FOOTER_LINE_Y + GAP_ABOVE_FOOTER
-    top = getattr(fig, "_content_top", 0.97) - GAP_BELOW_HEADER
+    left, right = margin_x(fig), 1 - margin_x(fig)
+    bottom, top = content_bounds(fig)
     for ax in fig.axes:
         if getattr(ax, "_no_fit", False):          # multi-panel cards place their axes themselves
             continue
@@ -516,8 +531,7 @@ def fit_font_px(strings, max_w_px: float, max_h_px: float | None = None, max_px:
 
 def content_px(fig: Figure) -> tuple[float, float]:
     """Width/height in pixels that fit_card() will give the content (call after the header)."""
-    top = getattr(fig, "_content_top", 0.97) - GAP_BELOW_HEADER
-    bottom = FOOTER_LINE_Y + GAP_ABOVE_FOOTER
+    bottom, top = content_bounds(fig)
     return (1 - 2 * MARGIN_X) * CARD_PX, (top - bottom) * CARD_PX
 
 

@@ -41,7 +41,7 @@ the analyses need, flattened into five local PostgreSQL tables:
 
 | Local table | Grain | Key columns |
 |---|---|---|
-| `match_player` | one row per player per match | `match_id`, `account_id`, `hero_id`, `team`, `won`, `start_time`, `duration_s`, rank badges, ~20 end-of-match stats (kills, net worth, damage, healing…) |
+| `match_player` | one row per player per match | `match_id`, `account_id`, `hero_id`, `team`, `won`, `start_time`, `duration_s`, `average_badge` (match rank) and `player_rank` (the player's own rank going in), ~20 end-of-match stats (kills, net worth, damage, healing…) |
 | `match_hero_roster` | one row per match | `team0` / `team1` hero-id arrays, `winning_team`, `match_duration_s` |
 | `heroes` | one row per hero | `hero_id`, `name`, `hero_type` (archetype) |
 | `match_bans` | one row per match with recorded bans | `match_id`, `start_time`, `banned_hero_ids` (3 per ranked match). Only matches whose replay the API processed have bans (about 15–50% a day); `validate_week.py` reports the weekly coverage |
@@ -60,6 +60,7 @@ Design choices:
 - **Archetype stacking**: win rate when a team has +N more brawlers / marksmen / assassins / mystics than the enemy
 - **Win rate by match duration**: which heroes scale into late game vs. fall off
 - **Hero duo synergies**: most-played pairs and their win rates
+- **Performance by rank**: best heroes in each of four rank brackets, which heroes reward skill (better at high rank) and which stomp low ranks, per-class rank heatmaps
 - **Team composition frequency**: how rarely exact 6-hero comps repeat
 - **Win-rate distribution**: hero balance vs. an idealized curve
 
@@ -122,7 +123,9 @@ not committed; the ingest scripts recreate them.
 - [x] Week-over-week deltas and an automated tier list (power score: win-rate edge × meta presence)
 - [x] `insights.py`: rank the week's findings by effect size × confidence
 - [x] Animated chart renders piped to ffmpeg (`animate.py`)
-- [ ] Win rate by rank bracket (skill floor) as a power-score input
+- [x] Win rate by rank bracket
+- [ ] Skill floor (low vs high rank) as a power-score input
+- [ ] Items and ability order (needs the per-player item list in the ingest)
 - [ ] pytest coverage for SQL transforms and stats helpers; GitHub Actions CI
 
 ## Data & attribution

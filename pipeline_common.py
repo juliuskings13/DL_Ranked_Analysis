@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS patch_periods (
     end_time    TIMESTAMPTZ,             -- NULL = still open (e.g. the current patch)
     description VARCHAR(100)
 );
+-- Rank: the team badge columns above are 0 in the API for every ranked match since launch, so the
+-- match's average badge and each player's own starting rank are stored instead.
+-- Badge = tier * 10 + subrank (tier 1 Initiate ... 11 Eternus); player_rank is 0 during placements.
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS average_badge SMALLINT;
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS player_rank SMALLINT;
+ALTER TABLE match_hero_roster ADD COLUMN IF NOT EXISTS average_badge SMALLINT;
+
 -- the period a patch / release period is compared against (e.g. the 7 days before it)
 ALTER TABLE patch_periods ADD COLUMN IF NOT EXISTS compare_to VARCHAR(100);
 
@@ -232,7 +239,9 @@ def copy_upsert(conn, table: str, columns: Sequence[str], rows: Iterable[Sequenc
                     " ON COMMIT DELETE ROWS")
         cur.copy_expert(f"COPY _stage_{table} ({cols}) FROM STDIN WITH (FORMAT csv)", buf)
         on_conflict = f"ON CONFLICT ({', '.join(key)}) {conflict}" if key else f"ON CONFLICT {conflict}"
-        cur.execute(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM _stage_{table} {on_conflict}")
+        # DO UPDATE can't touch the same row twice in one statement, and the source has duplicate rows
+        distinct = f"DISTINCT ON ({', '.join(key)}) " if key and conflict.upper().startswith("DO UPDATE") else ""
+        cur.execute(f"INSERT INTO {table} ({cols}) SELECT {distinct}{cols} FROM _stage_{table} {on_conflict}")
     conn.commit()
     return n
 

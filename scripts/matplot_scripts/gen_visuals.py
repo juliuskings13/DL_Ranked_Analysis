@@ -45,6 +45,7 @@ plotting_scripts = [
     "match_duration.py",                       # match-length IQR (defines early / late game)
     "week_over_week.py",                       # tier list + biggest movers, writes hero_deltas.csv
     "hero_spotlight.py",                       # one card per hero (graphs/heroes/)
+    "rank_performance.py",                     # best heroes per rank bracket, low vs high rank, per class
 ]
 
 failed = []

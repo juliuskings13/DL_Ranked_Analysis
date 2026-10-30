@@ -15,6 +15,8 @@ Outputs, in <week folder>/plans/:
     01_meta_report_scenes.csv   the matching clips:  python animate.py <week> --scenes plans/01_meta_report_scenes.csv
     ...one pair per video this week...
     shorts.md / shorts_scenes.csv   one-card, one-hero stories for shorts
+    hero_compendium_scenes.csv      every hero card, 30 s each, tier list first (no-voiceover video)
+    hero_compendium_chapters.txt    YouTube chapters for it
 and in the week folder:
     insights.md                 index: this week's videos, their top stories, and what to double-check
     insights.json               everything as data
@@ -47,7 +49,7 @@ from chart_stats import Insight, confidence_label, load_hero_meta  # noqa: E402
 MODULES = ["week_over_week", "pick_rate_winrate_scatter", "balance_wr_distribution",
            "hero_wr_total_matches_split_column", "archetype_stacking", "matchup_bubble_chart",
            "hero_strength_and_scaling", "hero_duo_synergy_table", "most_freq_comps", "comp_uniqueness",
-           "match_duration", "hero_spotlight"]
+           "match_duration", "hero_spotlight", "rank_performance"]
 
 # How much each kind of story matters (edit freely). Effects are in win-rate points, except
 # duration_change (minutes). Within a video, this decides which findings each card leads with.
@@ -56,7 +58,7 @@ KIND_WEIGHT = {
     "popular_trap": 1.0, "hidden_gem": 0.9, "late_scaler": 0.9, "early_hero": 0.8,
     "duo_synergy": 0.8, "duo_anti": 0.7, "stacking": 0.7, "duration_change": 1.0,
     "class_best": 0.8, "class_worst": 0.8, "class_count": 0.6, "class_late": 0.8, "class_early": 0.8,
-    "class_late_best": 0.6,
+    "class_late_best": 0.6, "rank_best": 0.7, "rank_worst": 0.7, "class_rank": 0.9,
 }
 EFFECT_CAP = 8.0            # one huge outlier shouldn't bury everything else
 MIN_CONFIDENCE = 0.80       # below this a finding is dropped (listed under "check before you say it")
@@ -104,7 +106,13 @@ VIDEOS = {
 }
 for _g in range(1, 5):
     VIDEOS[f"heroes_{_g}"] = {"title": f"Hero spotlights, group {_g} of 4", "hero_group": _g, "cards": []}
+VIDEOS["rank"] = {
+    "title": "Performance by rank",
+    "cards": ["rank_best_heroes", "rank_worst_heroes", *_per_class("rank_curve")],
+    "per_card": {"rank_best_heroes": 4, "rank_worst_heroes": 4}, "default_per_card": 2,
+}
 SHORTS = 12
+COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 4.0, 26.0     # 30 s per card in the no-voiceover hero video
 
 
 def confidence_factor(c: float) -> float:
@@ -161,7 +169,7 @@ def lineup(data_dir: Path, requested: list[str] | None, all_groups: bool = False
     return ["meta_report",
             next(k for k in ("when_heroes_win", "teams") if VIDEOS[k]["rotation"] == turn),
             next(k for k in VIDEOS if k.startswith("classes_") and VIDEOS[k]["rotation"] == turn),
-            *heroes]
+            "rank", *heroes]
 
 
 def plan_video(key: str, found: list[Insight], data_dir: Path, available: set[str]) -> dict:
@@ -311,6 +319,34 @@ def write_shorts(shorts: list[Insight], data_dir: Path, out_dir: Path) -> None:
                         f"short_{n:02d}_{slug}"])
 
 
+def write_compendium(data_dir: Path, out_dir: Path, available: set[str], order: str) -> int:
+    """Every hero card back to back (tier list first), plus YouTube chapters so viewers can jump to
+    their hero. Render and join:  python animate.py <week> --scenes plans/hero_compendium_scenes.csv
+    --concat hero_compendium.mp4 --fps 30"""
+    import hero_spotlight as HS
+    d = HS.load_all(data_dir)["d"]
+    heroes = sorted(d.index) if order == "alpha" else list(d.sort_values("power", ascending=False).index)
+    cards = (["tier_list"] if "tier_list" in available else []) + \
+            [f"hero_{HS.slug(h)}" for h in heroes if f"hero_{HS.slug(h)}" in available]
+    if not cards:
+        return 0
+    names = {f"hero_{HS.slug(h)}": h for h in heroes}
+    per = COMPENDIUM_BUILD_S + COMPENDIUM_HOLD_S
+    chapters = []
+    with open(out_dir / "hero_compendium_scenes.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["card", "build", "hold", "highlight", "name"])
+        for k, card in enumerate(cards):
+            w.writerow([card, COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S, "", f"compendium_{k:02d}_{card}"])
+            t = int(k * per)
+            stamp = f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60}:{t % 60:02d}"
+            chapters.append(f"{stamp} {names.get(card, 'Tier list')}")
+    label = T.week_label_from_dir(data_dir)
+    (out_dir / "hero_compendium_chapters.txt").write_text(
+        f"Every hero, {label} ({'A–Z' if order == 'alpha' else 'strongest to weakest'})\n\n" + "\n".join(chapters) + "\n")
+    return len(cards)
+
+
 def write_index(videos: list[dict], files: list[Path], shorts: list[Insight], data_dir: Path) -> Path:
     md = [f"# {T.week_label_from_dir(data_dir)} — video plan", "",
           f"Generated {datetime.now():%Y-%m-%d %H:%M} · {_meta_line(data_dir)}".rstrip(" ·"), ""]
@@ -333,6 +369,8 @@ def main() -> int:
     ap.add_argument("--base", default=None, help="folder to compare against (default: last week)")
     ap.add_argument("--hero-groups", choices=["rotate", "all"], default="rotate",
                     help="one hero-spotlight group per week (default) or all four")
+    ap.add_argument("--compendium-order", choices=["tier", "alpha"], default="tier",
+                    help="hero order in the no-voiceover all-heroes video (default: strongest first)")
     args = ap.parse_args()
 
     data_dir = (T.PROJECT_ROOT / f"week{args.week}_analysis") if args.week else T.resolve_target_dir(args.week_dir)
@@ -358,6 +396,10 @@ def main() -> int:
         print(f"{p['title']}: {f.name} ({clips} clips)")
     shorts = plan_shorts(found)
     write_shorts(shorts, data_dir, out_dir)
+    n_comp = write_compendium(data_dir, out_dir, available, args.compendium_order)
+    if n_comp:
+        mins = n_comp * (COMPENDIUM_BUILD_S + COMPENDIUM_HOLD_S) / 60
+        print(f"Hero compendium: {n_comp} cards, {mins:.0f} min (plans/hero_compendium_scenes.csv + chapters)")
     index = write_index(videos, files, shorts, data_dir)
     (data_dir / "insights.json").write_text(json.dumps(
         {"videos": [{"key": p["key"], "title": p["title"], "sections": [

@@ -16,6 +16,8 @@ Usage
     python animate.py --all                                   # every card, default timing
     python animate.py --scenes video_ep12.csv                 # a planned video, one clip per row
     python animate.py week12_analysis --all --codec prores    # editing-friendly ProRes .mov
+    python animate.py --scenes plans/hero_compendium_scenes.csv --concat hero_compendium.mp4 --fps 30
+                                                              # every clip joined into one video
 
 Highlight beats: "Name:seconds" separated by ";". Join names with "+" to highlight several at
 once, and use "-" to go back to the full chart. Archetype charts take archetype names
@@ -51,7 +53,7 @@ CHART_MODULES = [
     "hero_wr_total_matches_split_column", "pick_rate_winrate_scatter", "balance_wr_distribution",
     "archetype_stacking", "matchup_bubble_chart", "hero_strength_and_scaling", "match_duration",
     "hero_duo_synergy_table", "most_freq_comps", "comp_uniqueness", "week_over_week",
-    "hero_spotlight",
+    "hero_spotlight", "rank_performance",
 ]
 DEFAULT_BUILD_S = 4.0       # seconds for the card to draw itself in
 DEFAULT_HOLD_S = 3.0        # seconds on the finished card (before any highlight beats)
@@ -196,6 +198,8 @@ def main() -> int:
     ap.add_argument("--hold", type=float, default=DEFAULT_HOLD_S, help="seconds on the finished card")
     ap.add_argument("--highlight", default="", help='beats, e.g. "Haze:3; Victor+Mirage:3; -:1"')
     ap.add_argument("--fps", type=int, default=60)
+    ap.add_argument("--concat", type=Path, default=None,
+                    help="also join the rendered clips, in order, into this one video file")
     ap.add_argument("--codec", choices=list(CODECS), default="h264")
     ap.add_argument("--out-dir", type=Path, default=None, help="default: <week_dir>/videos")
     ap.add_argument("--compare", default=None, help="match_duration: folder of the period to compare")
@@ -225,6 +229,8 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     workers = int(os.environ.get("ANIMATE_WORKERS", os.cpu_count() or 4))
     used: dict[str, int] = {}
+    rendered: list[Path] = []
+    ext = CODECS[args.codec][0]
     with mp.get_context("fork").Pool(workers) as pool:
         for s in scenes:
             name = s.name or s.card
@@ -233,9 +239,25 @@ def main() -> int:
                 name = f"{name}_{used[name]}"
             t = time.time()
             secs = render_scene(s, pool, out_dir / name, args.fps, args.codec)
-            print(f"{name}{CODECS[args.codec][0]}: {secs:.1f}s clip in {time.time() - t:.1f}s")
+            rendered.append((out_dir / name).with_suffix(ext))
+            print(f"{name}{ext}: {secs:.1f}s clip in {time.time() - t:.1f}s")
     print(f"Clips in {out_dir}")
+    if args.concat:
+        concat(rendered, args.concat if args.concat.suffix else args.concat.with_suffix(ext))
     return 0
+
+
+def concat(clips: list[Path], out: Path) -> None:
+    """Join clips back to back without re-encoding (they share codec, size and frame rate)."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    listing = out.with_suffix(".txt")
+    listing.write_text("".join(f"file '{c.resolve()}'\n" for c in clips))
+    cmd = ["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
+           "-movflags", "+faststart", str(out)]
+    if subprocess.run(cmd).returncode != 0:
+        raise RuntimeError("ffmpeg concat failed")
+    listing.unlink()
+    print(f"Joined {len(clips)} clips into {out}")
 
 
 if __name__ == "__main__":

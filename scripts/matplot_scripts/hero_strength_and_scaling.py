@@ -130,18 +130,30 @@ def late_weighted(values: pd.DataFrame, cnt: pd.DataFrame, summ: dict) -> pd.Ser
 # --- CARD 1: EARLY vs LATE SCATTER -------------------------------------------------
 def render_early_late(t: pd.DataFrame, summ: dict, solo_wr: dict, meta: T.ChartMeta,
                       progress: float = 1.0, highlight: set[str] | None = None) -> "T.Figure":
-    highlight = {h.lower() for h in highlight} if highlight else None
-    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
     e_lab, l_lab, split_note = phase_labels(summ)
     t = t[(t["early_n"] >= MIN_PHASE_N) & (t["late_n"] >= MIN_PHASE_N)].copy()
-
     both = t[(t["early_wr"] > 50) & (t["late_wr"] > 50)]
     late_only = t[(t["early_wr"] <= 50) & (t["late_wr"] > 50)]
     early_only = t[(t["early_wr"] > 50) & (t["late_wr"] <= 50)]
+    corners = {"LATE-GAME HEROES": "lose early, win late", "STRONG ALL GAME": "win early and late",
+               "WEAK ALL GAME": "lose early and late", "EARLY-GAME HEROES": "win early, lose late"}
+    return render_split_scatter(
+        t, meta, "WHO WINS EARLY, WHO WINS LATE",
+        f"{len(both)} heroes win in both halves  ·  {len(late_only)} only late  ·  {len(early_only)} only early",
+        f"Win rate in games {e_lab}", f"Win rate in games {l_lab}", corners,
+        f"dashed line = same win rate early & late  ·  {split_note}", solo_wr, progress, highlight)
+
+
+def render_split_scatter(t: pd.DataFrame, meta: T.ChartMeta, title: str, subtitle: str, x_label: str,
+                         y_label: str, corners: dict, note: str, solo_wr: dict, progress: float = 1.0,
+                         highlight: set[str] | None = None) -> "T.Figure":
+    """Each hero at (win rate in one half, win rate in the other): x = early_wr, y = late_wr columns.
+    corners = {label: caption} for top-left, top-right, bottom-left, bottom-right, in that order.
+    Shared by the early/late card and the low/high rank card."""
+    highlight = {h.lower() for h in highlight} if highlight else None
+    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
     fig, ax = T.new_card()
-    T.draw_header(fig, "WHO WINS EARLY, WHO WINS LATE",
-                  f"{len(both)} heroes win in both halves  ·  {len(late_only)} only late  ·  "
-                  f"{len(early_only)} only early", alpha=p_frame)
+    T.draw_header(fig, title, subtitle, alpha=p_frame)
     T.draw_archetype_legend(fig, alpha=p_frame)
     T.draw_footer(fig, meta, alpha=p_frame)
 
@@ -153,8 +165,8 @@ def render_early_late(t: pd.DataFrame, summ: dict, solo_wr: dict, meta: T.ChartM
     for axis in (ax.xaxis, ax.yaxis):
         axis.set_major_locator(MultipleLocator(2 if hi - lo > 10 else 1))
         axis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}%"))
-    ax.set_xlabel(f"Win rate in games {e_lab}", labelpad=10)
-    ax.set_ylabel(f"Win rate in games {l_lab}", labelpad=10)
+    ax.set_xlabel(x_label, labelpad=10)
+    ax.set_ylabel(y_label, labelpad=10)
     for tl in ax.get_xticklabels() + ax.get_yticklabels():
         tl.set_alpha(p_frame)
 
@@ -166,11 +178,9 @@ def render_early_late(t: pd.DataFrame, summ: dict, solo_wr: dict, meta: T.ChartM
     ax.axhline(50, color=T.DIVIDER, lw=1.6, alpha=p_frame, zorder=1)
     ax.axvline(50, color=T.DIVIDER, lw=1.6, alpha=p_frame, zorder=1)
     ax.plot([lo, hi], [lo, hi], color=T.TEXT_MUTED, lw=1.6, ls=(0, (6, 4)), alpha=0.8 * p_frame, zorder=1)
-    corners = {"LATE-GAME HEROES": (0.015, 0.985, "left", "top", QUAD_BLUE, "lose early, win late"),
-               "STRONG ALL GAME": (0.985, 0.985, "right", "top", T.GREEN, "win early and late"),
-               "WEAK ALL GAME": (0.015, 0.015, "left", "bottom", T.RED, "lose early and late"),
-               "EARLY-GAME HEROES": (0.985, 0.015, "right", "bottom", QUAD_YELLOW, "win early, lose late")}
-    for head, (qx, qy, ha, va, col, sub) in corners.items():
+    spots_ = [(0.015, 0.985, "left", "top", QUAD_BLUE), (0.985, 0.985, "right", "top", T.GREEN),
+              (0.015, 0.015, "left", "bottom", T.RED), (0.985, 0.015, "right", "bottom", QUAD_YELLOW)]
+    for (head, sub), (qx, qy, ha, va, col) in zip(corners.items(), spots_):
         hy, sy = (qy, qy - 0.032) if va == "top" else (qy + 0.03, qy)
         ax.text(qx, hy, head, transform=ax.transAxes, ha=ha, va=va, color=col,
                 fontsize=T.px_to_pt(17), fontweight="bold", alpha=0.85 * p_frame, zorder=2)
@@ -204,7 +214,7 @@ def render_early_late(t: pd.DataFrame, summ: dict, solo_wr: dict, meta: T.ChartM
             ax.annotate(names[k], (xs[k], ys[k]), xytext=(dx, dy), textcoords="offset pixels", ha=ha, va=va,
                         color=T.TEXT, fontsize=T.px_to_pt(font), fontweight="bold", alpha=l_alpha[k],
                         zorder=9, path_effects=T.STROKE)
-    ax.text(0.5, -0.115, f"dashed line = same win rate early & late  ·  {split_note}",
+    ax.text(0.5, -0.115, note,
             transform=ax.transAxes, ha="center", va="top", color=T.TEXT_MUTED, fontsize=T.px_to_pt(14),
             alpha=p_frame)
     return fig
