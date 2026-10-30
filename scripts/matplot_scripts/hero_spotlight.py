@@ -62,6 +62,12 @@ def load_all(data_dir: Path) -> dict:
     except FileNotFoundError:
         pass
     try:
+        from rank_performance import curve_table, load_tier_winrates
+        out["ranks"] = load_tier_winrates(data_dir)
+        out["rank_net"] = curve_table(out["ranks"]).set_index("hero_name")
+    except FileNotFoundError:
+        out["ranks"] = out["rank_net"] = None
+    try:
         from hero_duo_synergy_table import prepare as duo_prepare
         out["duos"] = duo_prepare(data_dir)
     except FileNotFoundError:
@@ -128,6 +134,50 @@ def _panel(fig, rect, title: str, alpha: float):
     return ax
 
 
+def _rank_panel(ax, hero: str, data: dict, p_line: float, p_frame: float) -> None:
+    """Actual win rate at each of the 11 ranks (hollow = thin sample) and the hero's NET change,
+    the same numbers as the rank_curve cards."""
+    from rank_performance import RANK_POINT_MIN, RANK_TIER_NAMES
+    r = data.get("ranks")
+    rows = r[r["hero_name"] == hero].set_index("rank_tier") if r is not None else pd.DataFrame()
+    net = data["rank_net"].loc[hero] if data.get("rank_net") is not None and hero in data["rank_net"].index else None
+    if rows.empty or net is None:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No rank data this week", ha="center", va="center", color=T.TEXT_MUTED,
+                fontsize=T.px_to_pt(15), transform=ax.transAxes, alpha=p_frame)
+        return
+    tiers = sorted(RANK_TIER_NAMES)
+    rows = rows.reindex(tiers)
+    wr, n = rows["winrate"].to_numpy(float), rows["games"].fillna(0).to_numpy(float)
+    x = np.arange(len(tiers))
+    ok = ~np.isnan(wr)
+    xi, yi = x[ok], wr[ok]
+    ax.axhline(50, color=T.TEXT_MUTED, lw=1.2, alpha=0.6 * p_frame)
+    upto = p_line * (len(tiers) - 1)
+    keep = xi <= upto + 1e-9
+    xs, ys = list(xi[keep]), list(yi[keep])
+    if len(xs) and upto > xs[-1] and (~keep).any():
+        xs.append(upto); ys.append(float(np.interp(upto, xi, yi)))
+    ax.plot(xs, ys, color=T.GOLD, lw=2.6, solid_capstyle="round", solid_joinstyle="round", zorder=3)
+    for j in xi[keep]:
+        few = n[j] < RANK_POINT_MIN
+        c = T.wr_color(wr[j])
+        ax.scatter([j], [wr[j]], s=40, zorder=4, color=T.BG if few else c, edgecolor=c, lw=1.8)
+    lo, hi = min(np.nanmin(wr), 49), max(np.nanmax(wr), 51)
+    ax.set_ylim(lo - 0.8, hi + 2.0)
+    ax.set_xlim(-0.5, len(tiers) - 0.5)
+    ax.set_xticks(x, [RANK_TIER_NAMES[k] for k in tiers], rotation=40, ha="right", rotation_mode="anchor",
+                  fontsize=T.px_to_pt(12))
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
+    ax.grid(axis="y", color=T.GRID, alpha=p_frame)
+    clear = net["conf"] >= 0.95
+    col = (T.GREEN if net["net"] > 0 else T.RED) if clear else T.TEXT_MUTED
+    ax.text(1.0, 1.02, f"NET {net['net']:+.1f} pts", transform=ax.transAxes, ha="right", va="bottom",
+            color=col, fontsize=T.px_to_pt(17), fontweight="bold", alpha=p_frame)
+    ax.text(0.025, 0.97, f"hollow = under {RANK_POINT_MIN:,} games", transform=ax.transAxes, ha="left", va="top",
+            color=T.TEXT_MUTED, fontsize=T.px_to_pt(11), alpha=p_frame)
+
+
 def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, highlight=None) -> "T.Figure":
     r = data["d"].loc[hero]
     p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
@@ -175,8 +225,11 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
     left, right = T.MARGIN_X + 0.055, 1 - T.MARGIN_X
     split = bottom + (top - bottom) * 0.52            # trend above, game length + partners below
 
-    # --- trend
-    ax = _panel(fig, [left, split + 0.045, right - left, top - split - 0.045], "WIN RATE, LAST 8 WEEKS", p_frame)
+    # --- trend (top left) and rank (top right)
+    tw = 0.44
+    row_gap = 0.085                                   # room for the rotated rank names above the lower panels
+    ax = _panel(fig, [left, split + row_gap, (right - left) * tw, top - split - row_gap], "WIN RATE, LAST 8 WEEKS",
+                p_frame)
     h = data["hist"]
     h = h[h["hero_name"] == hero] if len(h) else h
     if len(h) >= 2:
@@ -206,6 +259,10 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
                 va="center", color=T.TEXT_MUTED, fontsize=T.px_to_pt(16), transform=ax.transAxes,
                 alpha=p_frame)
     ax.grid(axis="y", color=T.GRID, alpha=p_frame)
+
+    rx0 = left + (right - left) * tw + 0.075
+    ax = _panel(fig, [rx0, split + row_gap, right - rx0, top - split - row_gap], "WIN RATE BY RANK", p_frame)
+    _rank_panel(ax, hero, data, p_line, p_frame)
 
     # --- game length
     gw = 0.54
@@ -287,6 +344,10 @@ def insights(data_dir: Path, **_) -> list[Insight]:
         bits = [f"{r['winrate']:.1f}% win rate in {r['pick_rate']:.0f}% of matches"]
         if pd.notna(r.get("ban_rate")):
             bits.append(f"banned in {r['ban_rate']:.0f}%")
+        rn = data.get("rank_net")
+        if rn is not None and hero in rn.index and rn.loc[hero, "conf"] >= 0.8:
+            v = rn.loc[hero, "net"]
+            bits.append(f"{'gets better' if v > 0 else 'gets worse'} at higher ranks ({v:+.1f} pts Initiate to Eternus)")
         if len(best):
             bits.append(f"best partner {best.iloc[0]['partner']} ({best.iloc[0]['lift']:+.1f} pts)")
         out.append(Insight(f"hero_{slug(hero)}", "hero_profile", context=True,
