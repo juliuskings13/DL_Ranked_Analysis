@@ -29,7 +29,7 @@ flowchart LR
 | Transform | `query_transform.py` | Stages the week's complete matches once in temp tables, then runs every export against them (win rates, duo synergies, archetype differentials and matchups, duration histograms, comp frequency) |
 | Orchestrate | `run_pipeline.py`, `register_period.py` | Runs heroes → ingest → validate → transform → charts → insights for a week or a registered patch/release period; stops at the first failing stage and can resume with `--from` |
 | Visualize | `gen_visuals.py` + one script per chart, `animate.py` | Renders every chart for the target week as 1080×1080 cards; `animate.py` turns any card into a video clip (build-in, hold, highlight beats) piped to ffmpeg |
-| Insights | `insights.py` | Each chart script reports its findings as data (effect size + confidence); ranks them, merges findings per hero, and writes the week's voiceover outline (`insights.md`) plus a matching `animate.py` scenes CSV |
+| Insights | `insights.py` | Each chart script reports its findings as data (effect size + confidence); builds a running order per video (meta report weekly; game length / teams and the class deep dives rotating) with findings ranked per card, plus a rotating hero-spotlight video (one card per hero from `hero_spotlight.py`: trend, game length, partners; the roster split into four fixed groups) and a shorts list. Writes an outline and a matching `animate.py` scenes CSV for each into `plans/` |
 | Shared | `db_config.py`, `pipeline_common.py`, `theme.py`, `chart_stats.py` | DB settings from env (UTC sessions); schema, week math and bulk-load helpers; card layout & palette; statistics (Wilson CIs, sample thresholds, pick rate) |
 
 ## Data model

@@ -209,11 +209,11 @@ def render(rows: pd.DataFrame, meta: T.ChartMeta, title: str, subtitle: str,
 
 
 def insights(data_dir: Path, **_) -> list[Insight]:
-    """The most reliable synergy and anti-synergy (ranked by the cautious end of the range)."""
+    """The 3 most reliable synergies and anti-synergies (ranked by the cautious end of the range)."""
     df = prepare(data_dir)
     out = []
-    for kind, pick, card in (("duo_synergy", df[df["lift"] > 0].nlargest(1, "lift_lo"), "hero_duo_synergy_best"),
-                             ("duo_anti", df[df["lift"] < 0].nsmallest(1, "lift_hi"), "hero_duo_synergy_worst")):
+    for kind, pick, card in (("duo_synergy", df[df["lift"] > 0].nlargest(3, "lift_lo"), "hero_duo_synergy_best"),
+                             ("duo_anti", df[df["lift"] < 0].nsmallest(3, "lift_hi"), "hero_duo_synergy_worst")):
         for _, r in pick.iterrows():
             a, b = r["hero_name_a"], r["hero_name_b"]
             out.append(Insight(card, kind, highlight=(a, b), hero=None,

@@ -153,16 +153,36 @@ def render_movers(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str,
 
 
 # --- TIER LIST CARD ----------------------------------------------------------------
+NOTE_FONT_PX = 15
+NOTE_LINE_PX = 25                # line pitch of the explanation block (font + ~10px of air)
+NOTE_GAP_PX = 7                  # between the block and the footer rule
+SEP = "     ·     "
+
+
+def _note_lines(d: pd.DataFrame, prev_label: str | None) -> list[str]:
+    """The explanation under the tier list: what the numbers are, how power is built (with this
+    week's median), and what the arrows mean."""
+    bw = d.attrs.get("ban_weight", BAN_WEIGHT if "ban_rate" in d and d["ban_rate"].notna().any() else 0)
+    basis = f"pick rate + {bw:g} × ban rate" if bw else "pick rate"
+    median = d["presence"].median() if "presence" in d else d["pick_rate"].median()
+    lines = [f"Under each icon: win rate, then popularity weight (×){SEP}Power = (win rate − 50) × popularity weight",
+             f"Popularity weight = ({basis} ÷ {median:.1f}%) ^ {POWER_ALPHA:g}, "
+             f"where {median:.1f}% is this week's median {'presence' if bw else 'pick rate'}"]
+    if prev_label:
+        lines.append(f"▲▼ changed tier since {prev_label}{SEP}faded arrow = change within noise")
+    return lines
+
+
 def _tier_layout(counts: list[int], area_w: float, area_h: float) -> tuple[float, int, float]:
     """Largest icon size (px) whose wrapped rows fit: returns (icon px, icons per line, line px)."""
     for s in range(88, 30, -2):
         g = s * 0.22
         per_line = max(1, int((area_w + g) // (s + g)))
-        line_h = s * 1.42                                   # icon + win-rate label + breathing room
+        line_h = s * 1.62                                   # icon + win rate + weight + breathing room
         lines = sum(max(1, ceil(c / per_line)) if c else 0.6 for c in counts)
-        if lines * line_h + len(counts) * 10 <= area_h:
+        if lines * line_h <= area_h:
             return float(s), per_line, area_h / lines            # stretch rows to fill the card
-    return 30.0, max(1, int(area_w // 37)), 30 * 1.42
+    return 30.0, max(1, int(area_w // 37)), 30 * 1.62
 
 
 def tier_subtitle(d: pd.DataFrame) -> str:
@@ -190,8 +210,16 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
     T.draw_archetype_legend(fig, alpha=p_frame)
     T.draw_footer(fig, meta, alpha=p_frame)
 
+    # explanation block sits right above the footer rule; the table gets everything above it
+    notes = _note_lines(d, prev_label)
+    note_bottom = T.FOOTER_LINE_Y + NOTE_GAP_PX / T.CARD_PX
+    for k, line in enumerate(reversed(notes)):
+        fig.text(T.MARGIN_X, note_bottom + k * NOTE_LINE_PX / T.CARD_PX, line, ha="left", va="bottom",
+                 color=T.TEXT_MUTED, fontsize=T.px_to_pt(NOTE_FONT_PX), alpha=p_frame)
+    fig._content_bottom = note_bottom + (len(notes) * NOTE_LINE_PX + 4) / T.CARD_PX
+    fig._gap_below_header = 12 / T.CARD_PX
     W, H = T.content_px(fig)
-    note_h = 52
+    note_h = 0
     ax.set_xlim(0, W)
     ax.set_ylim(H, 0)                                       # pixel coordinates, y down
     tiers = TIER_NAMES[::-1]                                # GOD TIER at the top
@@ -199,7 +227,7 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
     label_w = max(T.text_px(t, 24) for t in tiers) + 26
     area_x0 = label_w + 14
     area_w = W - area_x0 - 8
-    s, per_line, line_h = _tier_layout([len(g) for g in groups.values()], area_w, H - note_h - 10)
+    s, per_line, line_h = _tier_layout([len(g) for g in groups.values()], area_w, H - note_h)
     g = s * 0.22
     wr_font = max(12, s * 0.24)
 
@@ -229,7 +257,7 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
         for j, (_, r) in enumerate(grp.iterrows()):
             line, col = divmod(j, per_line)
             cx = area_x0 + s / 2 + col * (s + g)
-            cy = y + line * line_h + s / 2 + (line_h - s * 1.3) / 2
+            cy = y + line * line_h + s / 2 + (line_h - s * 1.55) / 2
             st = 0.15 + 0.68 * k / total
             t = T.ease_out_cubic(T.phase(progress, st, st + 0.12))
             k += 1
@@ -242,6 +270,8 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
                                       wr=r["winrate"]), (cx, cy), zorder=6)
             ax.text(cx, cy + s / 2 + 3, f"{r['winrate']:.1f}%", ha="center", va="top", color=T.TEXT,
                     fontsize=T.px_to_pt(wr_font), fontweight="bold", alpha=a, zorder=7)
+            ax.text(cx, cy + s / 2 + 3 + wr_font * 1.15, f"×{r['weight']:.1f}", ha="center", va="top",
+                    color=T.TEXT_MUTED, fontsize=T.px_to_pt(wr_font * 0.85), alpha=a, zorder=7)
             # movement badges
             badge_a = a * p_badges
             if badge_a <= 0:
@@ -259,14 +289,6 @@ def render_tier_list(d: pd.DataFrame, meta: T.ChartMeta, prev_label: str | None,
                         color=T.GREEN if up else T.RED, fontsize=T.px_to_pt(max(16, s * 0.32)),
                         fontweight="bold", alpha=badge_a * faded, zorder=9, path_effects=T.STROKE)
         y += h
-    bw = d.attrs.get("ban_weight", BAN_WEIGHT if "ban_rate" in d and d["ban_rate"].notna().any() else 0)
-    presence = f"pick rate + {bw:g} × ban rate" if bw else "pick rate"
-    note = f"Power = (win rate − 50) × (presence ÷ median)^{POWER_ALPHA:g}  ·  presence = {presence}"
-    note += "\nNumber under icon = win rate"
-    if prev_label:
-        note += f"  ·  ▲▼ changed tier since {prev_label}  ·  faded = change within noise"
-    ax.text(W, H - 4, note, ha="right", va="bottom", color=T.TEXT_MUTED, fontsize=T.px_to_pt(14),
-            alpha=p_frame, linespacing=1.4)
     return fig
 
 
@@ -335,10 +357,14 @@ def insights(data_dir: Path, base: str | None = None, **_) -> list[Insight]:
                        "more players picking a losing hero" if more else
                        "fewer players picking a losing hero" if r["winrate"] < 50 else
                        "fewer players picking a winning hero")
-                headline, detail = f"{move}, mostly from {why}", f"Presence {pres_s}; win rate {wr_s}"
+                headline = f"{move}, mostly from {why}"
+                detail = (f"Presence {pres_s}, so its popularity weight went ×{r['weight_prev']:.1f} → "
+                          f"×{r['weight']:.1f}; win rate {wr_s}: power {r['power_prev']:+.1f} → {r['power']:+.1f}")
             else:
                 headline = move
-                detail = f"Win rate {wr_s}" + (f"; presence {pres_s}" if abs(r["presence"] - r["presence_prev"]) >= 3 else "")
+                detail = (f"Win rate {wr_s} at a ×{r['weight']:.1f} popularity weight (in {r['presence']:.0f}% of "
+                          f"matches), so every win-rate point counts {r['weight']:.1f}×: power "
+                          f"{r['power_prev']:+.1f} → {r['power']:+.1f}")
             out.append(Insight("tier_list", "tier_change", hero=r["hero_name"], highlight=(r["hero_name"],),
                                headline=headline, detail=detail, effect=abs(r["power_delta"]),
                                confidence=float(normal_cdf(abs(r["power_delta"]) / se)), tags=_tags(r)))

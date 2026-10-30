@@ -15,12 +15,13 @@ Usage: python3 most_freq_comps.py [week_dir] [--highlight "Haze"]
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pandas as pd
 from matplotlib.patches import Rectangle
 
 import theme as T
-from chart_stats import load_hero_meta, total_matches_from_hero_rows, wilson_ci
+from chart_stats import Insight, load_hero_meta, total_matches_from_hero_rows, wilson_ci
 
 ROWS = 8                    # 10 felt cluttered; icons/fonts scale automatically if you change it
 ICON_FILL = 0.66            # icon diameter as a share of row height (the rest is breathing room)
@@ -109,6 +110,25 @@ def render(df: pd.DataFrame, htype: dict, meta: T.ChartMeta, team_sides: int,
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    df, _ = prepare(data_dir)
+    if df.empty:
+        return []
+    r = df.iloc[0]
+    return [Insight("most_played_comps", "top_comp", context=True,
+                    headline=f"The most played comp appeared in only {int(r['total_matches'])} games",
+                    detail=", ".join(r["heroes"]) + f" ({r['winrate']:.0f}% win rate)")]
+
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    df, htype = prepare(data_dir)
+    heroes = load_hero_meta(data_dir)
+    n_matches = total_matches_from_hero_rows(heroes["total_matches"])
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches)
+    return {"most_played_comps": lambda progress=1.0, highlight=None: render(
+        df, htype, meta, team_sides=2 * n_matches, progress=progress, highlight=highlight)}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -117,14 +137,8 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
-    df, htype = prepare(data_dir)
-    heroes = load_hero_meta(data_dir)
-    n_matches = total_matches_from_hero_rows(heroes["total_matches"])
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), n_matches)
-    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
-    out = data_dir / "graphs" / "most_played_comps.png"
-    T.save_card(render(df, htype, meta, team_sides=2 * n_matches, progress=args.progress, highlight=hl), out)
-    print(f"Saved {out}")
+    for p in T.save_cards(cards(data_dir), data_dir / "graphs", args.progress, T.parse_names(args.highlight)):
+        print(f"Saved {p}")
 
 
 if __name__ == "__main__":

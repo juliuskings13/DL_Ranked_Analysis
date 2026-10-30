@@ -12,13 +12,15 @@ Usage: python3 hero_wr_total_matches_split_column.py [week_dir] [--highlight "Vi
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Rectangle
 
 import theme as T
-from chart_stats import add_pick_rate, add_winrate_ci, load_hero_meta, total_matches_from_hero_rows
+from chart_stats import (Insight, add_pick_rate, add_winrate_ci, load_hero_meta, total_matches_from_hero_rows,
+                         wr_confidence)
 
 TOP_N = 10
 BAR_H = 0.62            # fraction of a row
@@ -108,6 +110,57 @@ def render(rows: pd.DataFrame, meta: T.ChartMeta, title: str, subtitle: str,
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    """Per class: the clearest best and worst hero; the top-bottom card gets its leader as context."""
+    df = prepare(data_dir)
+    out = [Insight("hero_winrates_top_bottom", "top_bottom", context=True,
+                   headline=f"{df.iloc[0]['hero_name']} has the best win rate ({df.iloc[0]['winrate']:.1f}%), "
+                            f"{df.iloc[-1]['hero_name']} the worst ({df.iloc[-1]['winrate']:.1f}%)",
+                   highlight=(df.iloc[0]["hero_name"], df.iloc[-1]["hero_name"]))]
+    for htype in T.ARCHETYPE_ORDER:
+        g = df[df["hero_type"] == htype]
+        if g.empty:
+            continue
+        plural = "marksmen" if htype == "marksman" else f"{htype}s"
+        for kind, r in (("class_best", g.iloc[0]), ("class_worst", g.iloc[-1])):
+            best = kind == "class_best"
+            if (r["wr_lo"] <= 50 and best) or (r["wr_hi"] >= 50 and not best):
+                continue                                   # not clearly above / below 50%
+            out.append(Insight(f"hero_winrates_{htype}", kind, hero=r["hero_name"], highlight=(r["hero_name"],),
+                               headline=f"{'Best' if best else 'Worst'} of the {plural}: {r['hero_name']} "
+                                        f"at {r['winrate']:.1f}%",
+                               detail=f"in {r['pick_rate']:.0f}% of matches",
+                               effect=abs(r["winrate"] - 50),
+                               confidence=float(wr_confidence(r["winrate"], r["total_matches"]))))
+    return out
+
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    df = prepare(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(df["total_matches"]))
+    span = float(np.ceil(max((df["wr_hi"] - 50).abs().max(), (df["wr_lo"] - 50).abs().max()) + 0.5))
+
+    tb = pd.concat([df.head(TOP_N), df.tail(TOP_N)])
+    sub = (f"{df.iloc[0]['hero_name']} leads at {df.iloc[0]['winrate']:.1f}%  ·  "
+           f"{df.iloc[-1]['hero_name']} trails at {df.iloc[-1]['winrate']:.1f}%")
+    out = {"hero_winrates_top_bottom": lambda progress=1.0, highlight=None: render(
+        tb, meta, f"BEST & WORST {TOP_N} HEROES", sub, gap_after=TOP_N - 1,
+        span=span, progress=progress, highlight=highlight)}
+
+    for htype in T.ARCHETYPE_ORDER:
+        g = df[df["hero_type"] == htype]
+        if g.empty:
+            continue
+        above = int((g["wr_lo"] > 50).sum())
+        below = int((g["wr_hi"] < 50).sum())
+        sub_t = f"{above} clearly above 50%  ·  {below} clearly below  ·  {len(g) - above - below} too close to call"
+        title = ("MARKSMEN" if htype == "marksman" else f"{htype.upper()}S") + ": WIN RATE"
+        out[f"hero_winrates_{htype}"] = (lambda progress=1.0, highlight=None, g=g, title=title, sub_t=sub_t:
+                                         render(g, meta, title, sub_t, span=span, progress=progress,
+                                                highlight=highlight))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -117,28 +170,7 @@ def main() -> None:
 
     data_dir = T.resolve_target_dir(args.week_dir)
     out_dir = data_dir / "graphs"
-    df = prepare(data_dir)
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(df["total_matches"]))
-    hl = {h.strip() for h in args.highlight.split(",") if h.strip()} or None
-    span = float(np.ceil(max((df["wr_hi"] - 50).abs().max(), (df["wr_lo"] - 50).abs().max()) + 0.5))
-
-    tb = pd.concat([df.head(TOP_N), df.tail(TOP_N)])
-    sub = (f"{df.iloc[0]['hero_name']} leads at {df.iloc[0]['winrate']:.1f}%  ·  "
-           f"{df.iloc[-1]['hero_name']} trails at {df.iloc[-1]['winrate']:.1f}%")
-    T.save_card(render(tb, meta, f"BEST & WORST {TOP_N} HEROES", sub, gap_after=TOP_N - 1,
-                       span=span, progress=args.progress, highlight=hl),
-                out_dir / "hero_winrates_top_bottom.png")
-
-    for htype in T.ARCHETYPE_ORDER:
-        g = df[df["hero_type"] == htype]
-        if g.empty:
-            continue
-        above = int((g["wr_lo"] > 50).sum())
-        below = int((g["wr_hi"] < 50).sum())
-        sub = f"{above} clearly above 50%  ·  {below} clearly below  ·  {len(g) - above - below} too close to call"
-        title = ("MARKSMEN" if htype == "marksman" else f"{htype.upper()}S") + ": WIN RATE"
-        T.save_card(render(g, meta, title, sub, span=span, progress=args.progress, highlight=hl),
-                    out_dir / f"hero_winrates_{htype}.png")
+    T.save_cards(cards(data_dir), out_dir, args.progress, T.parse_names(args.highlight))
     print(f"Saved hero win-rate cards to {out_dir}")
 
 

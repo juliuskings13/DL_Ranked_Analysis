@@ -326,6 +326,8 @@ def fit_card(fig: Figure, iterations: int = 4) -> None:
     bottom = FOOTER_LINE_Y + GAP_ABOVE_FOOTER
     top = getattr(fig, "_content_top", 0.97) - GAP_BELOW_HEADER
     for ax in fig.axes:
+        if getattr(ax, "_no_fit", False):          # multi-panel cards place their axes themselves
+            continue
         for _ in range(iterations):
             pos = ax.get_position()
             tb = ax.get_tightbbox(renderer)

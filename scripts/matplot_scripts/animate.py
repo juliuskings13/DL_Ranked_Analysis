@@ -51,6 +51,7 @@ CHART_MODULES = [
     "hero_wr_total_matches_split_column", "pick_rate_winrate_scatter", "balance_wr_distribution",
     "archetype_stacking", "matchup_bubble_chart", "hero_strength_and_scaling", "match_duration",
     "hero_duo_synergy_table", "most_freq_comps", "comp_uniqueness", "week_over_week",
+    "hero_spotlight",
 ]
 DEFAULT_BUILD_S = 4.0       # seconds for the card to draw itself in
 DEFAULT_HOLD_S = 3.0        # seconds on the finished card (before any highlight beats)

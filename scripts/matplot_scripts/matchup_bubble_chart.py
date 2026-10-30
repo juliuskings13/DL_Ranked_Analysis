@@ -16,6 +16,7 @@ Usage: python3 matchup_bubble_chart.py [week_dir]
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import matplotlib.colors as mcolors
 import numpy as np
@@ -23,7 +24,7 @@ import pandas as pd
 from matplotlib.patches import Rectangle
 
 import theme as T
-from chart_stats import load_hero_meta, total_matches_from_hero_rows, wilson_ci
+from chart_stats import Insight, load_hero_meta, total_matches_from_hero_rows, wilson_ci, wr_confidence
 
 MIN_CELL_N = 200
 WR_SPAN = 6.0            # color range ±6 points around 50%
@@ -119,6 +120,38 @@ def render(df: pd.DataFrame, htype: str, meta: T.ChartMeta, progress: float = 1.
     return fig
 
 
+def insights(data_dir: Path, **_) -> list[Insight]:
+    """Per class: the most extreme reliable 'X of this class vs Y' result."""
+    out = []
+    for htype in T.ARCHETYPE_ORDER:
+        if not (data_dir / f"{htype}_comp_wr.csv").exists():
+            continue
+        df = prepare(data_dir, htype)
+        df = df[df["shown"] & ((df["hi"] < 50) | (df["lo"] > 50))]
+        if df.empty:
+            continue
+        r = df.loc[(df["wr"] - 50).abs().idxmax()]
+        plural = "marksmen" if htype == "marksman" else f"{htype}s"
+        out.append(Insight(f"archetype_count_matrix_{htype}", "class_count", highlight=(),
+                           headline=f"{int(r['mine'])} {plural} vs {int(r['theirs'])}: {r['wr']:.1f}% win rate",
+                           detail=f"{int(r['n']):,} matches; 95% range {r['lo']:.1f}–{r['hi']:.1f}%",
+                           effect=abs(r["wr"] - 50), confidence=float(wr_confidence(r["wr"], r["n"]))))
+    return out
+
+def cards(data_dir: Path, **_) -> dict:
+    """{output name: draw(progress=1.0, highlight=None) -> Figure} for every card this script makes."""
+    heroes = load_hero_meta(data_dir)
+    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(heroes["total_matches"]),
+                       min_n=MIN_CELL_N, min_n_unit="games per cell (hatched = fewer)")
+    out = {}
+    for htype in T.ARCHETYPE_ORDER:
+        if (data_dir / f"{htype}_comp_wr.csv").exists():
+            df = prepare(data_dir, htype)
+            out[f"archetype_count_matrix_{htype}"] = (
+                lambda progress=1.0, highlight=None, df=df, h=htype: render(df, h, meta, progress))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("week_dir", nargs="?", default=None)
@@ -126,13 +159,7 @@ def main() -> None:
     args = ap.parse_args()
 
     data_dir = T.resolve_target_dir(args.week_dir)
-    heroes = load_hero_meta(data_dir)
-    meta = T.ChartMeta(T.week_label_from_dir(data_dir), total_matches_from_hero_rows(heroes["total_matches"]),
-                       min_n=MIN_CELL_N, min_n_unit="games per cell (hatched = fewer)")
-    for htype in T.ARCHETYPE_ORDER:
-        if (data_dir / f"{htype}_comp_wr.csv").exists():
-            T.save_card(render(prepare(data_dir, htype), htype, meta, args.progress),
-                        data_dir / "graphs" / f"archetype_count_matrix_{htype}.png")
+    T.save_cards(cards(data_dir), data_dir / "graphs", args.progress)
     print(f"Saved archetype count matrices to {data_dir / 'graphs'}")
 
 

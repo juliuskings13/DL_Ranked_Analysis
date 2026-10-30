@@ -320,6 +320,35 @@ def insights(data_dir: Path, **_) -> list[Insight]:
     t["conf"] = normal_cdf(t["delta"].abs() / se)
     cut = fmt_min(summ["median"])
     out = []
+    types = dict(zip(heroes["hero_name"], heroes["hero_type"]))
+    t["hero_type"] = t["hero_name"].map(types)
+    for htype in T.ARCHETYPE_ORDER:
+        g = t[(t["hero_type"] == htype) & (t["conf"] >= 0.8)]
+        if g.empty:
+            continue
+        plural = "marksmen" if htype == "marksman" else f"{htype}s"
+        late, early, top = g.loc[g["delta"].idxmax()], g.loc[g["delta"].idxmin()], g.loc[g["late_wr"].idxmax()]
+        if late["delta"] > 0:
+            out.append(Insight(f"hero_duration_scaling_{htype}", "class_late", hero=late["hero_name"],
+                               highlight=(late["hero_name"],),
+                               headline=f"{late['hero_name']} scales hardest of the {plural}: "
+                                        f"{late['delta']:+.1f} pts after {cut}",
+                               detail=f"{late['early_wr']:.1f}% before, {late['late_wr']:.1f}% after",
+                               effect=abs(late["delta"]), confidence=float(late["conf"])))
+        if early["delta"] < 0:
+            out.append(Insight(f"hero_duration_scaling_{htype}", "class_early", hero=early["hero_name"],
+                               highlight=(early["hero_name"],),
+                               headline=f"{early['hero_name']} fades the most of the {plural}: "
+                                        f"{early['delta']:+.1f} pts after {cut}",
+                               detail=f"{early['early_wr']:.1f}% before, {early['late_wr']:.1f}% after",
+                               effect=abs(early["delta"]), confidence=float(early["conf"])))
+        se_l = (top["late_hi"] - top["late_lo"]) / 3.92
+        out.append(Insight(f"hero_duration_winrate_{htype}", "class_late_best", hero=top["hero_name"],
+                           highlight=(top["hero_name"],),
+                           headline=f"Best {htype} in long games: {top['hero_name']} at {top['late_wr']:.1f}%",
+                           detail=f"games longer than {cut}; {top['early_wr']:.1f}% in shorter ones",
+                           effect=abs(top["late_wr"] - 50),
+                           confidence=float(normal_cdf(abs(top["late_wr"] - 50) / se_l))))
     for kind, r in (("late_scaler", t.loc[t["delta"].idxmax()]), ("early_hero", t.loc[t["delta"].idxmin()])):
         late = kind == "late_scaler"
         out.append(Insight("hero_early_vs_late", kind, hero=r["hero_name"], highlight=(r["hero_name"],),

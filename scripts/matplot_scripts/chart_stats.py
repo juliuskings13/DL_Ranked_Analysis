@@ -233,6 +233,7 @@ def add_power(df: pd.DataFrame, alpha: float = POWER_ALPHA, ban_weight: float = 
     bans = out["ban_rate"].fillna(0) if "ban_rate" in out else 0.0
     out["presence"] = out["pick_rate"] + ban_weight * bans
     weight = (out["presence"] / out["presence"].median()) ** alpha
+    out["weight"] = weight                         # popularity weight: power = (win rate - 50) * weight
     p = out["winrate"] / 100
     out["power"] = (out["winrate"] - 50) * weight
     out["power_se"] = np.sqrt(p * (1 - p) / out[n_col]) * 100 * weight   # win-rate noise only
@@ -298,7 +299,7 @@ def hero_deltas(now_dir, prev_dir, z: float = 1.96) -> pd.DataFrame:
         if "ban_rate" not in d:
             d["ban_rate"] = np.nan
     cols = ["hero_name", "total_matches", "wins", "winrate", "pick_rate", "ban_rate", "presence",
-            "power", "power_se", "rank", "tier", "wr_tier"]
+            "weight", "power", "power_se", "rank", "tier", "wr_tier"]
     out = now[["hero_type"] + cols].merge(prev[cols], on="hero_name", how="left", suffixes=("", "_prev"))
     out = out.rename(columns={"total_matches": "games", "total_matches_prev": "games_prev"})
 
@@ -359,3 +360,26 @@ def wr_confidence(wr, n):
 
 def confidence_label(c: float) -> str:
     return "very likely real" if c >= 0.99 else "likely real" if c >= 0.95 else "could be noise"
+
+
+# =============================================================================
+# HISTORY  (the same hero across recent week folders)
+# =============================================================================
+def hero_history(data_dir, weeks: int = 8) -> pd.DataFrame:
+    """hero_winrates of this week and up to `weeks - 1` earlier week folders next to it:
+    week, label, hero_name, games, winrate, wr_lo, wr_hi, pick_rate. Empty for non-week folders."""
+    import re
+    from pathlib import Path
+    data_dir = Path(data_dir)
+    m = re.search(r"week(\d+)", data_dir.name)
+    if not m:
+        return pd.DataFrame()
+    n, frames = int(m.group(1)), []
+    for w in range(max(1, n - weeks + 1), n + 1):
+        d = data_dir.with_name(data_dir.name.replace(m.group(0), f"week{w}", 1))
+        if (d / "hero_winrates.csv").exists():
+            h = add_winrate_ci(add_pick_rate(load_hero_meta(d)))
+            frames.append(h.assign(week=w, label=f"W{w}"))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).rename(columns={"total_matches": "games"})
