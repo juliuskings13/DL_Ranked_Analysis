@@ -193,6 +193,20 @@ CREATE TABLE IF NOT EXISTS items (
     slot_type VARCHAR(50),
     cost      INT
 );
+ALTER TABLE items ADD COLUMN IF NOT EXISTS class_name VARCHAR(100);
+ALTER TABLE items ADD COLUMN IF NOT EXISTS shopable   BOOLEAN;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS hero_id    INT;
+ALTER TABLE items ADD COLUMN IF NOT EXISTS image_url  TEXT;
+
+-- each hero's four abilities in slot order (1-3 regular, 4 = ultimate), from the assets API
+CREATE TABLE IF NOT EXISTS hero_abilities (
+    hero_id    INT      NOT NULL,
+    slot       SMALLINT NOT NULL,
+    ability_id BIGINT,
+    class_name VARCHAR(100),
+    name       VARCHAR(100),
+    PRIMARY KEY (hero_id, slot)
+);
 """
 
 

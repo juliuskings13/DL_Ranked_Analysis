@@ -53,7 +53,7 @@ CHART_MODULES = [
     "hero_wr_total_matches_split_column", "pick_rate_winrate_scatter", "balance_wr_distribution",
     "archetype_stacking", "matchup_bubble_chart", "hero_strength_and_scaling", "match_duration",
     "hero_duo_synergy_table", "most_freq_comps", "comp_uniqueness", "week_over_week",
-    "hero_spotlight", "rank_performance",
+    "hero_spotlight", "rank_performance", "patch_notes",
 ]
 DEFAULT_BUILD_S = 4.0       # seconds for the card to draw itself in
 DEFAULT_HOLD_S = 3.0        # seconds on the finished card (before any highlight beats)
@@ -116,7 +116,10 @@ def read_scenes(path: Path) -> list[Scene]:
 def collect_cards(data_dir: Path, **opts) -> dict:
     """{card name: draw(progress, highlight)} across every chart script."""
     out = {}
-    for mod_name in CHART_MODULES:
+    # a patch folder (made by patch_notes.py) only has patch cards; a week folder never has changes.csv
+    modules = ["patch_notes"] if (Path(data_dir) / "changes.csv").exists() else \
+        [m for m in CHART_MODULES if m != "patch_notes"]
+    for mod_name in modules:
         try:
             mod = importlib.import_module(mod_name)
             out.update(mod.cards(data_dir, **opts))

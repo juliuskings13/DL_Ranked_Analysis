@@ -504,6 +504,7 @@ def icon_any(name: str, size_px: int, ring_hex: str | None = None, alpha: float 
 # TEXT MEASURING / DYNAMIC SIZING
 # =============================================================================
 @lru_cache(maxsize=4096)
+@lru_cache(maxsize=100_000)
 def _text_w_per_px(s: str, bold: bool) -> float:
     """Rendered width of s, in pixels, per 1px of font size."""
     from matplotlib.font_manager import FontProperties

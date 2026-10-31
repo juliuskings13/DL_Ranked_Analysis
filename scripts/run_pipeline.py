@@ -41,6 +41,7 @@ def stages(week: int | None = None, period: str | None = None) -> list[tuple[str
         p = ["--period", period]
         return [
             ("heroes", [str(HERE / "ingest_scripts" / "hero_ingest_deadlock.py")]),
+            ("assets", [str(HERE / "ingest_scripts" / "ingest_game_assets.py")]),
             ("ingest", [str(HERE / "ingest_scripts" / "ingest_dl_comm_api_parquet.py"), *p]),
             ("validate", [str(HERE / "ingest_scripts" / "validate_week.py"), *p]),
             ("transform", [str(HERE / "sql_scripts" / "query_transform.py"), *p, "--with-compare"]),
@@ -51,6 +52,7 @@ def stages(week: int | None = None, period: str | None = None) -> list[tuple[str
     w = ["--week", str(week)]
     return [
         ("heroes", [str(HERE / "ingest_scripts" / "hero_ingest_deadlock.py")]),
+        ("assets", [str(HERE / "ingest_scripts" / "ingest_game_assets.py")]),
         ("ingest", [str(HERE / "ingest_scripts" / "ingest_dl_comm_api_parquet.py"), *w]),
         ("validate", [str(HERE / "ingest_scripts" / "validate_week.py"), *w]),
         ("transform", [str(HERE / "sql_scripts" / "query_transform.py"), *w]),
@@ -67,7 +69,7 @@ def main() -> int:
     g.add_argument("--week", type=int)
     g.add_argument("--date", "--start-date", dest="date")
     g.add_argument("--period", help="a period from register_period.py instead of a week")
-    ap.add_argument("--from", dest="start_at", choices=["heroes", "ingest", "validate", "transform", "charts", "insights", "patches"])
+    ap.add_argument("--from", dest="start_at", choices=["heroes", "assets", "ingest", "validate", "transform", "charts", "insights", "patches"])
     ap.add_argument("--skip", nargs="*", default=[], help="stage names to skip")
     args = ap.parse_args()
 

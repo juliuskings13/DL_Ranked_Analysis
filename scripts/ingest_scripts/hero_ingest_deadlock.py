@@ -1,5 +1,5 @@
 """
-hero_ingest_deadlock.py — sync the heroes dimension table from the Deadlock assets API.
+hero_ingest_deadlock.py — sync the heroes dimension table from the Deadlock API's assets endpoint.
 
 Run it whenever a hero is added or renamed. Every analysis query joins on heroes, so a
 hero missing here is silently dropped from all results (validate_week.py checks for this).
@@ -15,7 +15,8 @@ import requests
 
 from pipeline_common import connect, copy_upsert, ensure_schema, setup_logging
 
-HEROES_URL = "https://api.deadlock-api.com/v1/assets/heroes"
+# the old assets host (assets.deadlock-api.com/v2) was retired; same data now lives under /v1/assets
+HEROES_URL = "https://api.deadlock-api.com/v1/assets/heroes?only_active=true"
 log = setup_logging()
 
 
