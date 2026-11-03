@@ -11,29 +11,37 @@ Workflow
   3. Export the segments: File -> Export project -> CSV (Start, End, Name).
   4. Run:
        python assemble_video.py RECORDING.mp4 SEGMENTS.csv patches/2026-10-30_...      (or a week folder)
+         [--add closer.mp4]                 (a whole recording, no cuts: named after the card it goes with)
 
 What it does
   - renders every card's animation to last exactly as long as you talk about it (text cards reveal their
     lines at their normal speed, charts build in 6s, then the card holds until the take ends; if a take is
     shorter than the build, the camera's first frame is frozen (silent) at the start to make room)
-  - puts face + card side by side (16:9: your face 840x1080 on the left, card 1080x1080 on the right) and cuts
-    your recording frame-accurately (it's re-encoded once here anyway, so keyframes don't matter)
+  - puts face + card side by side at 2560x1440 (your face 1120x1440 on the left, taken 1:1 from x 480-1600 of
+    the recording; the card upscaled to 1440x1440 on the right) and cuts your recording frame-accurately
+    (it's re-encoded once here anyway, so keyframes don't matter)
   - joins every segment into one video (stream copy, no second encode) + YouTube chapters
   - renders a 9:16 short (card on top, face below, hook text + intro sound like your other shorts) for every
     segment whose name has "| ..."
 
-Order: patch folders default to opener -> item overviews -> item cards -> hero overviews -> heroes A-Z ->
-general -> closer (patch_closer, the winners & losers card); anything else
-uses the CSV order. --order csv forces the CSV order.
+Order and chapter titles come from an order file (format in orders/patch_notes.txt):
+  --order auto (default)  order.txt in the cards folder if there is one; else orders/patch_notes.txt for a patch
+                          folder; else the order of your CSV
+  --order csv             the order of your CSV, chapter titles from the card names
+  --order NAME | FILE     orders/NAME.txt next to this script, or any order file
 
-Face position: by default the whole recording frame is center-cropped to fit the face panel. If your camera
-is only part of the recording, give its rectangle like render_pipeline's layouts: --face-crop 517:291:2045:563
-(width:height:x:y). Record the camera at its own full resolution if you can; a small cam region gets blurry
-when it's blown up to 840x1080.
+Face position: the recording is treated as 2560x1440 (scaled to it if not). Main video takes x 480-1600 at
+full height; shorts take x 300-1700 below the top 300 px. Change them with --face-crop / --short-crop (w:h:x:y).
+
+Takes from another recording (e.g. closing thoughts recorded later), repeatable; sorted into the same order:
+  --add closer.mp4                      the whole file, on the card its name matches (closer -> patch_closer)
+  --add thoughts.mp4 patch_closer       the whole file, on that card ("patch_closer | HOOK" for a short too)
+  --add more.mp4 more.csv               cut by its own LosslessCut CSV
 """
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import importlib.util
 import json
 import math
@@ -48,8 +56,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # --- layout -----------------------------------------------------------------------
-MAIN_W, MAIN_H = 1920, 1080          # card 1080x1080 + face 840x1080
-CARD_PX = 1080
+MAIN_W, MAIN_H = 2560, 1440          # face 1120x1440 on the left + card 1440x1440 on the right
+CARD_PX = 1440                       # cards are drawn at 1080 and upscaled (lanczos) to this
+SOURCE_W, SOURCE_H = 2560, 1440      # recordings are normalized to this first, so the crops below always fit
+# camera areas (w:h:x:y on the 2560x1440 recording). Main: x 480-1600, full height (1:1 pixels, no scaling).
+# Shorts: x 300-1700, top 300 px cut; trimmed from the bottom to the 1440x1120 panel's shape, then scaled.
+FACE_CROP_MAIN = "1120:1440:480:0"
+FACE_CROP_SHORT = "1400:1140:300:300"
 SHORT_CARD = 1440                    # shorts: 1440x1440 card on top, face 1440x1120 below (render_pipeline OUT_W/H)
 SHORT_HOOK_Y = 1450                  # hook text sits at the top of the face area, not over the card
 CARD_FPS = 30                        # cards are rendered at 30 fps (frames are converted to the recording's rate)
@@ -76,17 +89,90 @@ def card_of(name: str) -> str:
     return re.sub(r"\.(png|jpg|mp4|mov)$", "", name.strip(), flags=re.I)
 
 
-# opener -> items overview -> item cards -> heroes overview -> heroes A-Z -> general -> closer
-PATCH_ORDER = [r"patch_opener$", r"patch_items$", r"patch_items_size$", r"patch_items_weapon",
-               r"patch_items_vitality", r"patch_items_spirit", r"patch_items_", r"patch_heroes$",
-               r"patch_heroes_size$", r"patch_hero_", r"patch_general", r"patch_closer$"]
-HERO_RANK = PATCH_ORDER.index(r"patch_hero_")
+ORDERS_DIR = Path(__file__).resolve().parent / "orders"
+
+
+def load_order(path: Path) -> list[dict]:
+    """Order file -> [{pattern, title, az}], one per line ("pattern | chapter title | options")."""
+    rules = []
+    for line in path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        rules.append({"pattern": parts[0], "title": (parts[1] if len(parts) > 1 else "") or "{name}",
+                      "az": len(parts) > 2 and "a-z" in parts[2].lower()})
+    if not rules:
+        raise SystemExit(f"{path} has no order lines")
+    return rules
+
+
+def resolve_order(order: str, cards_dir: Path, patch: bool) -> tuple[list[dict] | None, str]:
+    """(rules or None for CSV order, description)."""
+    if order == "csv":
+        return None, "CSV order"
+    if order == "auto":
+        if (cards_dir / "order.txt").exists():
+            return load_order(cards_dir / "order.txt"), str(cards_dir / "order.txt")
+        if patch:
+            return load_order(ORDERS_DIR / "patch_notes.txt"), "patch notes preset"
+        return None, "CSV order (no order.txt in the cards folder)"
+    path = Path(order) if Path(order).suffix else ORDERS_DIR / f"{order}.txt"
+    if not path.exists():
+        raise SystemExit(f"Order file not found: {path}")
+    return load_order(path), str(path)
+
+
+def name_part(card: str, pattern: str, display: dict) -> str:
+    """The part of the card name the pattern's * matched, as a title: patch_hero_mo_krill_2 -> Mo & Krill."""
+    prefix = pattern.split("*", 1)[0]
+    rest = card[len(prefix):] if "*" in pattern and card.startswith(prefix) else card
+    rest = re.sub(r"_\d+$", "", rest.strip("_")) or card
+    return display.get(rest, rest.replace("_", " ").title())
+
+
+def apply_order(segs: list[dict], rules: list[dict] | None, display: dict) -> list[dict]:
+    """Sort segments by the order file and give each its chapter title."""
+    def default(card):
+        return re.sub(r"_\d+$", "", card).replace("_", " ").title()
+    if rules is None:
+        for s in segs:
+            s["title"] = default(s["card"])
+        return segs
+    for s in segs:
+        k = next((i for i, r in enumerate(rules) if fnmatch.fnmatchcase(s["card"], r["pattern"])), None)
+        s["rule"] = len(rules) if k is None else k
+        s["title"] = (default(s["card"]) if k is None else
+                      rules[k]["title"].replace("{name}", name_part(s["card"], rules[k]["pattern"], display)))
+    return sorted(segs, key=lambda s: (s["rule"], s["card"] if s["rule"] < len(rules) and rules[s["rule"]]["az"]
+                                       else "", s["row"]))
 FREEZE_SPARE_S = 0.5                 # a take shorter than its card's build gets this much extra after the build
 
 
-def read_segments(rp, csv_path: Path, card_names: set[str], order: str, patch: bool) -> list[dict]:
-    df = rp.read_csv_clean(str(csv_path))
+def read_segments(rp, takes: list[tuple[str, Path]], card_names: set[str]) -> list[dict]:
     segs, problems = [], []
+    for f, (rec, src) in enumerate(takes):
+        if str(src).lower().endswith(".csv"):
+            segs += _read_one(rp, rec, Path(src), card_names, problems, f)
+        else:                                          # whole recording on one card
+            lab = rp.parse_label(src or Path(rec).stem)
+            card = card_of(lab["name"])
+            card = card if card in card_names else f"patch_{card}" if f"patch_{card}" in card_names else card
+            if card not in card_names:
+                problems.append(f"{Path(rec).name}: no card named {card!r} (add the card name after the file)")
+                continue
+            dur = rp.get_video_duration(rec)
+            hook = lab["hook"]
+            segs.append({"card": card, "start": 0.0, "end": dur, "dur": dur, "row": (f, 0), "rec": rec,
+                         "short": "|" in str(src), "hook": None if hook.strip() in ("", "-") else hook})
+    if problems:
+        print("  [!] Skipped (check the names in LosslessCut):\n      " + "\n      ".join(problems))
+    return segs
+
+
+def _read_one(rp, rec: str, csv_path: Path, card_names: set[str], problems: list, f: int) -> list[dict]:
+    df = rp.read_csv_clean(str(csv_path))
+    segs = []
     for i, row in df.iterrows():
         lab = rp.parse_label(row.get("Name"))
         if not lab["name"]:
@@ -94,45 +180,21 @@ def read_segments(rp, csv_path: Path, card_names: set[str], order: str, patch: b
         card = card_of(lab["name"])
         start, end = float(row["Start"]), float(row["End"])
         if card not in card_names:
-            problems.append(f"row {i + 2}: no card named {card!r}")
+            problems.append(f"{csv_path.name} row {i + 2}: no card named {card!r}")
             continue
         hook = lab["hook"]
         short = "|" in str(row.get("Name"))
-        segs.append({"card": card, "start": start, "end": end, "dur": end - start, "row": i,
+        segs.append({"card": card, "start": start, "end": end, "dur": end - start, "row": (f, i), "rec": rec,
                      "short": short, "hook": None if hook.strip() in ("", "-") else hook})
-    if problems:
-        print("  [!] Skipped (check the names in LosslessCut):\n      " + "\n      ".join(problems))
-    if order == "auto" and patch:
-        def rank(s):
-            k = next((n for n, pat in enumerate(PATCH_ORDER) if re.match(pat, s["card"])), len(PATCH_ORDER))
-            return (k, s["card"] if k == HERO_RANK else "", s["row"])        # heroes A-Z, everything else as recorded
-        segs.sort(key=rank)
     return segs
 
 
-def chapter_title(card: str, hero_names: dict) -> str:
-    fixed = {"patch_opener": "Intro", "patch_heroes": "Hero changes overview",
-             "patch_heroes_size": "How big were the changes", "patch_items": "Item changes overview",
-             "patch_items_size": "How big were the item changes", "patch_closer": "Winners & losers"}
-    if card in fixed:
-        return fixed[card]
-    m = re.match(r"patch_hero_(.+?)(?:_\d+)?$", card)
-    if m:
-        return hero_names.get(m.group(1), m.group(1).replace("_", " ").title())
-    m = re.match(r"patch_items_(weapon|vitality|spirit|other)", card)
-    if m:
-        return f"{m.group(1).title()} items"
-    if card.startswith("patch_general"):
-        return "General changes"
-    return card.replace("_", " ").title()
-
-
-def chapters(segs: list[dict], hero_names: dict) -> list[str]:
+def chapters(segs: list[dict]) -> list[str]:
     """YouTube chapter lines. Consecutive segments with the same title merge; chapters under 10 s merge with
     the next one (names joined), so YouTube accepts the list."""
     blocks, t = [], 0.0
     for s in segs:
-        title = chapter_title(s["card"], hero_names)
+        title = s["title"]
         if blocks and blocks[-1]["titles"][-1] == title:
             blocks[-1]["dur"] += s.get("len", s["dur"])
         else:
@@ -188,11 +250,12 @@ def render_cards(data_dir: Path, segs: list[dict], tmp: Path, workers: int) -> N
 
 # --- composites -------------------------------------------------------------------
 def face_filter(face_crop: str | None, w: int, h: int) -> str:
-    """Crop the face area (optional rectangle), then center-crop to the panel's shape and scale."""
+    """Normalize the recording to 2560x1440, crop the camera area, trim it to the panel's shape (sides
+    evenly, or from the bottom, so the top of your head stays put) and scale to the panel."""
     ar = w / h
-    pre = f"crop={face_crop}," if face_crop else ""
-    return (f"{pre}crop='if(gt(iw/ih,{ar:.6f}),ih*{ar:.6f},iw)':'if(gt(iw/ih,{ar:.6f}),ih,iw/{ar:.6f})',"
-            f"scale={w}:{h},setsar=1")
+    pre = f"scale={SOURCE_W}:{SOURCE_H},setsar=1," + (f"crop={face_crop}," if face_crop else "")
+    return (f"{pre}crop='if(gt(iw/ih,{ar:.6f}),ih*{ar:.6f},iw)':'if(gt(iw/ih,{ar:.6f}),ih,iw/{ar:.6f})'"
+            f":'(iw-ow)/2':0,scale={w}:{h}:flags=lanczos,setsar=1")
 
 
 def video_tail(rp, use_vaapi: bool) -> str:
@@ -222,7 +285,7 @@ def main_piece_cmd(rp, raw: str, s: dict, out: str, face_crop: str | None, use_v
     cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{take:.3f}", "-i", raw, "-i", s["clip"]]
     a = rp.AUDIO_TRACK if rp.AUDIO_TRACK is not None else 0
     # camera on the LEFT, card on the right
-    g = (f"[1:v]fps={fps_s},scale={CARD_PX}:{CARD_PX},setsar=1,tpad=stop_mode=clone:stop_duration=5[c];"
+    g = (f"[1:v]fps={fps_s},scale={CARD_PX}:{CARD_PX}:flags=lanczos,setsar=1,tpad=stop_mode=clone:stop_duration=5[c];"
          f"[0:v]fps={fps_s},{vpad}{face_filter(face_crop, MAIN_W - CARD_PX, MAIN_H)}[f];"
          f"[f][c]hstack=inputs=2,trim=duration={d:.3f},setpts=PTS-STARTPTS,{video_tail(rp, use_vaapi)}[v];"
          f"[0:a:{a}]aresample=48000,{apad}apad,atrim=duration={d:.3f},asetpts=PTS-STARTPTS[a]")
@@ -245,7 +308,7 @@ def short_cmd(rp, raw: str, s: dict, out: str, face_crop: str | None, use_vaapi:
         cmd += ["-loop", "1", "-framerate", fps_s, "-t", str(rp.HOOK_SHOW_SECONDS + rp.HOOK_FADE_SECONDS), "-i", png]
         png_i, n = n, n + 1
     a = rp.AUDIO_TRACK if rp.AUDIO_TRACK is not None else 0
-    g = [f"[1:v]fps={fps_s},scale={W}:{W},setsar=1,tpad=stop_mode=clone:stop_duration=5[c]",
+    g = [f"[1:v]fps={fps_s},scale={W}:{W}:flags=lanczos,setsar=1,tpad=stop_mode=clone:stop_duration=5[c]",
          f"[0:v]fps={fps_s},{vpad}{face_filter(face_crop, W, H - W)}[f]",
          f"[c][f]vstack=inputs=2,trim=duration={d:.3f},setpts=PTS-STARTPTS[base]"]
     last = "base"
@@ -283,8 +346,15 @@ def main() -> int:
     ap.add_argument("segments_csv", type=Path, help="LosslessCut export (Start, End, Name)")
     ap.add_argument("cards_dir", type=Path, help="patch folder or week folder the cards come from")
     ap.add_argument("--out", type=Path, default=None, help="finished video (default: <longs_dir>/<csv name>.mp4)")
-    ap.add_argument("--order", choices=["auto", "csv"], default="auto")
-    ap.add_argument("--face-crop", default=None, help="camera rectangle in the recording, w:h:x:y")
+    ap.add_argument("--order", default="auto",
+                    help="auto (default), csv, a preset name from orders/ (e.g. patch_notes), or an order file")
+    ap.add_argument("--add", nargs="+", action="append", default=[], metavar="RECORDING [CSV|CARD]",
+                    help="another recording: alone (whole file, card from its name), + a card name, "
+                         "or + its LosslessCut CSV; repeatable")
+    ap.add_argument("--face-crop", default=FACE_CROP_MAIN,
+                    help=f"camera area for the main video on the 2560x1440 recording, w:h:x:y (default {FACE_CROP_MAIN})")
+    ap.add_argument("--short-crop", default=FACE_CROP_SHORT,
+                    help=f"camera area for shorts, w:h:x:y (default {FACE_CROP_SHORT})")
     ap.add_argument("--pipeline", default=None, help="path to render_pipeline.py")
     ap.add_argument("--cpu", action="store_true", help="x264 instead of the GPU encoder")
     ap.add_argument("--no-shorts", action="store_true")
@@ -297,14 +367,26 @@ def main() -> int:
     import animate as A
     patch = (args.cards_dir / "changes.csv").exists()
     cards = A.collect_cards(args.cards_dir)
-    segs = read_segments(rp, args.segments_csv, set(cards), args.order, patch)
+    for a in args.add:
+        if len(a) > 2:
+            raise SystemExit(f"--add takes a recording and at most one CSV or card name, got: {' '.join(a)}")
+    takes = [(args.recording, str(args.segments_csv))] + [(a[0], a[1] if len(a) > 1 else "") for a in args.add]
+    segs = read_segments(rp, takes, set(cards))
     if not segs:
         raise SystemExit("No segment matched a card.")
-    hero_names = {}
+    display = {}                                       # card-name part -> proper name for chapter titles
+    from hero_spotlight import slug
+    try:
+        import theme as T
+        display = {slug(h): h for h in T.HERO_COLORS} if hasattr(T, "HERO_COLORS") else {}
+    except Exception:
+        pass
     if patch:
         import patch_notes as P
-        from hero_spotlight import slug
-        hero_names = {slug(h): h for h in P.load_changes(args.cards_dir)[0].query("kind == 'hero'")["subject"].unique()}
+        display.update({slug(h): h for h in P.load_changes(args.cards_dir)[0]["subject"].unique()})
+    rules, how = resolve_order(args.order, args.cards_dir, patch)
+    segs = apply_order(segs, rules, display)
+    print(f"Order: {how}")
     total = sum(s["dur"] for s in segs)
     print(f"{len(segs)} segments, {total / 60:.1f} min of video, {sum(s['short'] for s in segs)} shorts")
 
@@ -320,7 +402,7 @@ def main() -> int:
         for k, s in enumerate(segs):
             piece = str(tmp / f"piece_{k:03d}.mkv")
             if not run_with_fallback(rp, lambda v, s=s, piece=piece: main_piece_cmd(
-                    rp, args.recording, s, piece, args.face_crop, v), s["card"]):
+                    rp, s["rec"], s, piece, args.face_crop, v), s["card"]):
                 raise SystemExit(f"Could not render the segment for {s['card']}.")
             pieces.append(piece)
             print(f"  [+] {k + 1}/{len(segs)} {s['card']}")
@@ -331,7 +413,7 @@ def main() -> int:
                                  "-c", "copy", "-movflags", "+faststart", str(out)])
         if not ok:
             raise SystemExit(f"Joining failed: {rp.short_error(err)}")
-        chap = chapters(segs, hero_names)
+        chap = chapters(segs)
         out.with_suffix(".chapters.txt").write_text("\n".join(chap) + "\n")
         print(f"--> Video: {out} ({rp.get_video_duration(str(out)) / 60:.1f} min)\n--> Chapters: "
               f"{out.with_suffix('.chapters.txt')}")
@@ -348,7 +430,7 @@ def main() -> int:
                     rp.generate_text_overlay_image(s["hook"], png)
                 fx = rp.pick_intro_fx() if s["hook"] else None
                 if run_with_fallback(rp, lambda v, s=s, png=png, fx=fx: short_cmd(
-                        rp, args.recording, s, str(dest), args.face_crop, v, png, fx), f"short {name}"):
+                        rp, s["rec"], s, str(dest), args.short_crop, v, png, fx), f"short {name}"):
                     made += 1
                     print(f"  [+] short: {dest}")
             if made:

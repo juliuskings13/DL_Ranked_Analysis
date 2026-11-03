@@ -1,0 +1,21 @@
+# Order preset for patch-notes videos (used automatically for patch folders).
+# One line per group of cards, in the order they appear in the video:
+#     pattern | chapter title | options
+# pattern: card name, * = anything (patch_hero_* matches every hero card). A card goes to the FIRST line it
+#          matches, so list specific patterns before general ones.
+# chapter title: {name} = the part of the card name the * matched (patch_hero_mo_krill -> "Mo & Krill").
+#          Consecutive cards with the same title share one chapter.
+# options: a-z = sort this group alphabetically (default: the order you recorded them).
+# Cards that match no line go at the end, in recording order.
+patch_opener          | Intro
+patch_items           | Item changes overview
+patch_items_size      | How big were the item changes
+patch_items_weapon*   | Weapon items
+patch_items_vitality* | Vitality items
+patch_items_spirit*   | Spirit items
+patch_items_*         | Other items
+patch_heroes          | Hero changes overview
+patch_heroes_size     | How big were the hero changes
+patch_hero_*          | {name}            | a-z
+patch_general*        | General changes
+patch_closer          | Winners & losers

@@ -611,7 +611,7 @@ def load_changes(patch_dir: Path) -> tuple[pd.DataFrame, dict]:
     return df.sort_values("order"), meta
 
 
-PCT_CAP = 50.0          # one change counts at most this many % toward a hero's total (0.04 -> 0.01 is "75%")
+PCT_CAP = 100.0         # one change counts at most this much (keeps e.g. 1 -> 5 = "400%" from swamping averages)
 
 
 def change_pct(r) -> float:
@@ -627,11 +627,15 @@ def change_pct(r) -> float:
     return min(pct, PCT_CAP)
 
 
-def subject_summary(df: pd.DataFrame, kind: str) -> pd.DataFrame:
-    """Per hero (or item): weighted buff and nerf totals, rework flag, net, and the overall call."""
+def subject_summary(df: pd.DataFrame, kind: str, overall: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per hero (or item): weighted buff and nerf totals, rework flag, net, and the overall call.
+    `dir` is the overall direction (+1 buffed, -1 nerfed, 0 mixed / reworked): the sign of net, unless
+    overall.csv says otherwise. `closer` is the pinned spot on the closing card (0 = not pinned, -1 = never)."""
     d = df[df["kind"] == kind]
     if d.empty:
-        return pd.DataFrame(columns=["subject", "buff", "nerf", "other", "rework", "net", "call", "slot"])
+        return pd.DataFrame(columns=["subject", "buff", "nerf", "other", "rework", "net", "call", "slot", "dir",
+                                     "closer", "net_size", "buff_size", "nerf_size", "buff_avg", "nerf_avg",
+                                     "overridden"])
     g = d.groupby("subject", sort=False)
     s = pd.DataFrame({
         "buff": g.apply(lambda x: x.loc[x["final"] == "buff", "w"].sum()),
@@ -655,7 +659,70 @@ def subject_summary(df: pd.DataFrame, kind: str) -> pd.DataFrame:
         ["REWORKED", "BUFFED", "NERFED", np.where(s["net"] > 0, "MIXED, MOSTLY BUFFED",
                                                   np.where(s["net"] < 0, "MIXED, MOSTLY NERFED", "MIXED"))],
         "CHANGED")
+    s["dir"] = np.sign(s["net"]).astype(int)
+    s["closer"] = 0
+    s["overridden"] = False
+    if overall is not None and len(overall):
+        o = overall[overall["kind"] == kind].set_index("subject")
+        for i, r in s.iterrows():
+            if r["subject"] not in o.index:
+                continue
+            row = o.loc[r["subject"]]
+            call = str(row.get("overall", "")).strip().lower()
+            if call in OVERALL_CALLS:
+                s.at[i, "dir"] = OVERALL_CALLS[call][0]
+                s.at[i, "call"] = OVERALL_CALLS[call][1]
+                s.at[i, "rework"] = call == "rework" or (r["rework"] and call not in ("buff", "nerf"))
+                s.at[i, "overridden"] = True
+            pin = str(row.get("closer", "")).strip().lower()
+            if pin in ("no", "x", "n", "0", "-"):
+                s.at[i, "closer"] = -1
+            elif pin.isdigit():
+                s.at[i, "closer"] = int(pin)
     return s.sort_values(["net", "buff"], ascending=[False, False]).reset_index(drop=True)
+
+
+# overall.csv: one row per hero / item. "overall" overrides the direction the line counts give (e.g. Apollo:
+# more buff lines, but stun -> immobilize makes him nerfed overall; Healbane now stacks: a buff with no numbers).
+# "closer": 1-3 pins it to that spot on its side of the closing card, "no" keeps it off.
+OVERALL_CALLS = {"buff": (1, "BUFFED"), "nerf": (-1, "NERFED"), "mixed": (0, "MIXED"), "rework": (0, "REWORKED")}
+OVERALL_COLS = ["kind", "subject", "auto", "overall", "closer", "buffs", "nerfs", "net_size", "note"]
+
+
+def read_overall(patch_dir: Path) -> pd.DataFrame | None:
+    path = Path(patch_dir) / "overall.csv"
+    if not path.exists():
+        return None
+    o = pd.read_csv(path, dtype=str, keep_default_na=False)
+    if "subject" not in o.columns or "kind" not in o.columns:
+        print(f"  [!] {path} has no header row (opened from row 2?); ignoring it. Restore it from backups/.")
+        return None
+    return o
+
+
+def sync_overall(patch_dir: Path, df: pd.DataFrame) -> Path:
+    """(Re)write overall.csv from the current line calls, keeping your overall / closer / note edits."""
+    path = Path(patch_dir) / "overall.csv"
+    old = read_overall(patch_dir)
+    keep = {}
+    if old is not None:
+        backup(path)
+        keep = {(r["kind"], r["subject"]): r for _, r in old.iterrows()}
+    rows = []
+    for kind in ("hero", "item"):
+        summ = subject_summary(df, kind)
+        summ = summ[(summ["buff"] + summ["nerf"] + summ["other"] > 0) | summ["rework"]]
+        auto = {1: "buff", -1: "nerf"}
+        for _, r in summ.sort_values("subject").iterrows():
+            prev = keep.get((kind, r["subject"]), {})
+            rows.append({"kind": kind, "subject": r["subject"],
+                         "auto": "rework" if r["rework"] else auto.get(int(r["dir"]), "mixed" if r["buff"] else "change"),
+                         "overall": prev.get("overall", ""), "closer": prev.get("closer", ""),
+                         "buffs": f"{r['buff']:g}", "nerfs": f"{r['nerf']:g}",
+                         "net_size": f"{r['net_size']:+.0f}%" if r["net_size"] else "",
+                         "note": prev.get("note", "")})
+    pd.DataFrame(rows, columns=OVERALL_COLS).to_csv(path, index=False)
+    return path
 
 
 # --- CARDS -------------------------------------------------------------------------
@@ -692,11 +759,13 @@ def render_overview(summary: pd.DataFrame, kind: str, meta: dict, progress: floa
     p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
     p_bars = T.ease_out_cubic(T.phase(progress, 0.15, 0.85))
     size = measure == "size"
-    bcol, ncol = ("buff_size", "nerf_size") if size else ("buff", "nerf")
+    bcol, ncol = ("buff_avg", "nerf_avg") if size else ("buff", "nerf")
     s = summary.copy()
     if size:
-        s = s.sort_values(["net_size", "buff_size"], ascending=[False, False]).reset_index(drop=True)
-    nb, nn = int((s["call"] == "BUFFED").sum()), int((s["call"] == "NERFED").sum())
+        s[[bcol, ncol]] = s[[bcol, ncol]].fillna(0)
+        s["net_avg"] = s[bcol] - s[ncol]
+        s = s.sort_values(["net_avg", bcol], ascending=[False, False]).reset_index(drop=True)
+    nb, nn = int((s["dir"] > 0).sum()), int((s["dir"] < 0).sum())
     what = "HEROES" if kind == "hero" else "ITEMS"
     sub = (f"{len(s)} {what.lower()} changed · {nb} buffed · {nn} nerfed · "
            f"{len(s) - nb - nn} mixed or reworked")
@@ -757,8 +826,8 @@ def render_overview(summary: pd.DataFrame, kind: str, meta: dict, progress: floa
         if r["rework"]:
             ax.text(bar_c, row, "◆", ha="center", va="center", color=T.GOLD, fontsize=T.px_to_pt(font * 1.1),
                     alpha=a * t, zorder=6)
-    note = (f"bar = all the % changes added up (each capped at {PCT_CAP:.0f}%; lines without numbers aren't "
-            "counted)" if size else "bar length = number of changes (or their weights, if set)")
+    note = (f"bar = average size of its buffs / nerfs (|to - from| / from, capped at {PCT_CAP:.0f}%; lines "
+            "without numbers aren't counted)" if size else "bar length = number of changes (or their weights, if set)")
     ax.text(0, per_col - 0.5 + 0.45, note + "  ·  ◆ = rework" +
             ("  ·  dot = item slot (weapon / vitality / spirit)" if kind == "item" and not icons else ""),
             ha="left", va="center", color=T.TEXT_MUTED, fontsize=T.px_to_pt(13), alpha=p_frame)
@@ -768,13 +837,13 @@ def render_overview(summary: pd.DataFrame, kind: str, meta: dict, progress: floa
 def opener_groups(summary: pd.DataFrame) -> list[tuple[str, str, list[str]]]:
     """(label, color, heroes) for the opener: buffed (net > 0), nerfed (net < 0), reworked (+ even mixes).
     Heroes that only got bug fixes are left out. Biggest changes first."""
-    s = summary[(summary["buff"] + summary["nerf"] > 0) | summary["rework"]].copy()
+    s = summary[(summary["buff"] + summary["nerf"] > 0) | summary["rework"] | summary["overridden"]].copy()
     s["mag"] = s["net"].abs()
-    rew = s[s["rework"]]
-    rest = s[~s["rework"]]
-    even = rest[rest["net"] == 0]
-    out = [("BUFFED", T.GREEN, list(rest[rest["net"] > 0].sort_values("mag", ascending=False)["subject"])),
-           ("NERFED", T.RED, list(rest[rest["net"] < 0].sort_values("mag", ascending=False)["subject"]))]
+    rew = s[s["rework"] & (s["dir"] == 0)]
+    rest = s[~s.index.isin(rew.index)]
+    even = rest[rest["dir"] == 0]
+    out = [("BUFFED", T.GREEN, list(rest[rest["dir"] > 0].sort_values("mag", ascending=False)["subject"])),
+           ("NERFED", T.RED, list(rest[rest["dir"] < 0].sort_values("mag", ascending=False)["subject"]))]
     third = list(rew["subject"]) + list(even["subject"])
     if third:
         out.append(("REWORKED" if even.empty else ("MIXED" if rew.empty else "REWORKED & MIXED"), T.GOLD, third))
@@ -787,9 +856,24 @@ CLOSER_TOP = 3              # closer card: this many heroes and items on each si
 def closer_picks(summary: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Biggest winners and losers: ranked by the net size of their changes (buff % minus nerf %, the
     patch_*_size cards), with the net number of changes as the tie-breaker."""
-    s = summary.copy()
+    s = summary[summary["closer"] >= 0].copy()
     s["score"] = s["net_size"].fillna(0) + s["net"] * 1e-3
-    return (s[s["net"] > 0].nlargest(n, "score"), s[s["net"] < 0].nsmallest(n, "score"))
+
+    def side(d: pd.DataFrame, best_first: bool) -> pd.DataFrame:
+        pinned = d[d["closer"] > 0].sort_values("closer")
+        rest = d[d["closer"] == 0].sort_values("score", ascending=not best_first)
+        slots = [None] * n
+        for _, r in pinned.iterrows():                 # pins take their spot (or the next free one)
+            k = min(int(r["closer"]), n) - 1
+            while k < n and slots[k] is not None:
+                k += 1
+            if k < n:
+                slots[k] = r
+        fill = iter(r for _, r in rest.iterrows())
+        slots = [x if x is not None else next(fill, None) for x in slots]
+        return pd.DataFrame([x for x in slots if x is not None])
+
+    return side(s[s["dir"] > 0], True), side(s[s["dir"] < 0], False)
 
 
 def render_closer(heroes: pd.DataFrame, items: pd.DataFrame, meta: dict, item_icons: dict, progress: float = 1.0,
@@ -798,7 +882,7 @@ def render_closer(heroes: pd.DataFrame, items: pd.DataFrame, meta: dict, item_ic
     highlight = {h.lower() for h in highlight} if highlight else None
     p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.12))
     fig = _blank_card()
-    T.draw_header(fig, "WINNERS & LOSERS", f"Patch {meta.get('title', '')} · biggest buffs and nerfs by size",
+    T.draw_header(fig, "WINNERS & LOSERS", f"Patch {meta.get('title', '')} · most buffed and nerfed overall",
                   alpha=p_frame)
     T.draw_footer(fig, _meta(meta), alpha=p_frame)
     top = (1 - fig._content_top) * T.CARD_PX + 20
@@ -837,12 +921,14 @@ def render_closer(heroes: pd.DataFrame, items: pd.DataFrame, meta: dict, item_ic
                 fig.text(tx / T.CARD_PX, 1 - (yy + icon * 0.32) / T.CARD_PX, r["subject"], color=T.TEXT,
                          fontsize=T.px_to_pt(name_px), fontweight="bold", va="center", ha="left", alpha=a)
                 bits = []
-                if r["buff"]:
-                    bits.append(f"{r['buff']:g} buff" + ("s" if r["buff"] != 1 else ""))
-                if r["nerf"]:
-                    bits.append(f"{r['nerf']:g} nerf" + ("s" if r["nerf"] != 1 else ""))
-                size = r["net_size"]
-                sub = " · ".join(bits) + (f" · net {size:+.0f}%" if pd.notna(size) and size else "")
+                for col, word in (("buff", "buff"), ("nerf", "nerf")):
+                    if r[col]:
+                        avg = r[f"{col}_avg"]
+                        bits.append(f"{r[col]:g} {word}" + ("s" if r[col] != 1 else "")
+                                    + (f" (avg {avg:.0f}%)" if pd.notna(avg) else ""))
+                sub = " · ".join(bits)
+                if r.get("overridden") or not sub:
+                    sub = ("buffed overall" if r["dir"] > 0 else "nerfed overall") + (f" · {sub}" if sub else "")
                 fig.text(tx / T.CARD_PX, 1 - (yy + icon * 0.72) / T.CARD_PX, sub, color=color,
                          fontsize=T.px_to_pt(16), va="center", ha="left", alpha=a)
     return fig
@@ -971,6 +1057,7 @@ def _layout_columns(groups, col_w: float, height_px: float, ncols: int, min_font
 def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta: dict, progress: float = 1.0,
                 highlight: set[str] | None = None, icon: str | None = None, ring: str | None = None,
                 badge: tuple[str, str] | None = None, group_icons: dict | None = None,
+                group_tags: dict | None = None,
                 ncols: int = 1, head_scale: float = 1.0, accent: str | None = None,
                 min_font: float | None = None, max_font: float = 24) -> "T.Figure":
     """A card listing changes: optional group headings (abilities, items), each line with a colored marker.
@@ -1044,7 +1131,19 @@ def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta
                                  origin="upper", zorder=3)
                     gx += isz + f * 0.35
                 hpx = f * (0.92 if head_scale == 1 else 1.15)
-                hpx = min(hpx, T.fit_font_px([body.upper()], width_px - (gx - x0_px) - 4, max_px=hpx, min_px=10))
+                tags = (group_tags or {}).get(body) or []
+                tag_w = 0.0
+                if tags:                                       # e.g. "▲ avg 88%" right-aligned on the heading
+                    tpx = f * 0.8
+                    tx = x0_px + width_px - 2
+                    for txt, tcol in reversed(tags):
+                        fig.text(tx / T.CARD_PX, 1 - (y + gh / 2 - f * 0.1) / T.CARD_PX, txt, color=tcol,
+                                 fontsize=T.px_to_pt(tpx), fontweight="bold", va="center", ha="right",
+                                 alpha=row_t(k))
+                        tx -= (len(txt) * 0.62 + 0.6) * tpx
+                    tag_w = x0_px + width_px - tx
+                hpx = min(hpx, T.fit_font_px([body.upper()], width_px - (gx - x0_px) - 4 - tag_w, max_px=hpx,
+                                             min_px=10))
                 fig.text(gx / T.CARD_PX, 1 - (y + gh / 2 - f * 0.1) / T.CARD_PX, body.upper(), color=accent or T.GOLD,
                          fontsize=T.px_to_pt(hpx), fontweight="bold",
                          va="center", ha="left", alpha=row_t(k))
@@ -1154,8 +1253,9 @@ def cards(data_dir: Path, **_) -> dict:
     df, meta = load_changes(data_dir)
     names = load_names(online=False)
     out = {}
-    heroes = subject_summary(df, "hero")
-    items = subject_summary(df, "item")
+    overall = read_overall(data_dir)
+    heroes = subject_summary(df, "hero", overall)
+    items = subject_summary(df, "item", overall)
     item_icons = names.get("item_icons", {})
     from hero_spotlight import slug
     types = {}
@@ -1201,6 +1301,15 @@ def cards(data_dir: Path, **_) -> dict:
                         render_list(n.upper() + (f" ({pg}/{total})" if total > 1 else ""), s, g, meta,
                                     progress, highlight, icon=n, ring=T.archetype_color(types.get(n, "")),
                                     badge=(call, c), group_icons=gi))
+    item_tags = {}
+    for _, it in items.iterrows():
+        tags = []
+        if pd.notna(it["buff_avg"]):
+            tags.append((f"▲ {it['buff_avg']:.0f}%", T.GREEN))
+        if pd.notna(it["nerf_avg"]):
+            tags.append((f"▼ {it['nerf_avg']:.0f}%", T.RED))
+        if tags:
+            item_tags[it["subject"]] = tags
     if len(items):
         slot_names = {"weapon": "WEAPON", "vitality": "VITALITY", "spirit": "SPIRIT"}
         slot_of = items["slot"].where(items["slot"].isin(list(slot_names)), "")
@@ -1214,7 +1323,7 @@ def cards(data_dir: Path, **_) -> dict:
                 groups.append((it["subject"], [{**_row(r), "key": it["subject"]} for _, r in d.iterrows()]))
             pages = _paginate(groups, LIST_H_PX["other"], ncols=2, keep_groups=True, min_font=ITEM_MIN_FONT,
                               head_scale=ITEM_HEAD_SCALE, max_groups=ITEMS_PER_CARD_MAX)
-            nb, nn = int((sub_items["net"] > 0).sum()), int((sub_items["net"] < 0).sum())
+            nb, nn = int((sub_items["dir"] > 0).sum()), int((sub_items["dir"] < 0).sum())
             label = slot_names.get(slot, "OTHER")
             for p, g in enumerate(pages, 1):
                 key = f"patch_items_{slot or 'other'}" + (f"_{p}" if len(pages) > 1 else "")
@@ -1223,6 +1332,7 @@ def cards(data_dir: Path, **_) -> dict:
                             render_list(f"{label} ITEMS" + (f" ({p}/{total})" if total > 1 else ""), sub, g, meta,
                                         progress, highlight, group_icons=item_icons, ncols=2,
                                         head_scale=ITEM_HEAD_SCALE, accent=SLOT_ACCENT.get(label.lower()),
+                                        group_tags=item_tags,
                                         min_font=ITEM_MIN_FONT, max_font=ITEM_MAX_FONT))
     gen = df[df["kind"] == "general"]
     if len(gen):
@@ -1245,15 +1355,15 @@ def cards(data_dir: Path, **_) -> dict:
 def insights(data_dir: Path, **_) -> list[Insight]:
     df, meta = load_changes(data_dir)
     out = []
-    h = subject_summary(df, "hero")
+    h = subject_summary(df, "hero", read_overall(data_dir))
     if len(h):
         for _, r in h.head(3).iterrows():
-            if r["net"] > 0:
+            if r["dir"] > 0:
                 out.append(Insight("patch_heroes", "patch_buff", hero=r["subject"], highlight=(r["subject"],),
                                    headline=f"{r['subject']}: {r['call'].lower()} ({r['buff']:g} buffs, {r['nerf']:g} nerfs)",
                                    effect=float(r["net"]), confidence=1.0))
         for _, r in h.iloc[::-1].head(3).iterrows():
-            if r["net"] < 0:
+            if r["dir"] < 0:
                 out.append(Insight("patch_heroes", "patch_nerf", hero=r["subject"], highlight=(r["subject"],),
                                    headline=f"{r['subject']}: {r['call'].lower()} ({r['nerf']:g} nerfs, {r['buff']:g} buffs)",
                                    effect=float(-r["net"]), confidence=1.0))
@@ -1346,7 +1456,9 @@ def main() -> int:
         df = write_changes(df, out, meta)
         print(f"{len(df)} change lines -> {out / 'changes.csv'}")
         review(out)
-        print(f"\nCorrect the verdict column where needed, then: python patch_notes.py cards {out}")
+        sync_overall(out, load_changes(out)[0])
+        print(f"\nCorrect the auto column in changes.csv where needed (and overall.csv for whole-hero / item calls"
+              f" and closing-card picks), then: python patch_notes.py cards {out}")
     elif args.cmd == "review":
         review(args.patch_dir)
     elif args.cmd == "lessons":
@@ -1357,6 +1469,7 @@ def main() -> int:
         for old in (args.patch_dir / "graphs").glob("patch_*.png"):     # drop cards a previous run made
             old.unlink()
         learn_from(args.patch_dir)
+        sync_overall(args.patch_dir, load_changes(args.patch_dir)[0])
         saved = T.save_cards(cards(args.patch_dir), args.patch_dir / "graphs", args.progress)
         print(f"Saved {len(saved)} cards to {args.patch_dir / 'graphs'}")
     return 0

@@ -19,14 +19,23 @@ Usage:
     python ingest_dl_comm_api_parquet.py --week 12 --with-stats         # also damage/healing stats
     python ingest_dl_comm_api_parquet.py --period Release_Nurse_Harrow_d1-7   # see register_period.py
     python ingest_dl_comm_api_parquet.py --week 12 --source-files ./sample/*.parquet   # offline/dev
+    python ingest_dl_comm_api_parquet.py --ranks-only --weeks 1-13      # backfill only the rank columns
+
+--ranks-only updates the rank columns of rows already in match_player and nothing else: it reads ~10 small
+columns instead of ~20, narrows the files by the week's match_id range (from your database), and with
+--weeks reads the file list and footers once for every week.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
+
+import csv
+import io
 
 import duckdb
 import requests
@@ -69,8 +78,16 @@ COLUMNS: list[tuple[str, str]] = [
     ("mvp_rank", "mp.mvp_rank"),
 ]
 # rank columns: optional per file set (older dumps may lack them); re-ingesting a week fills them in
-RANK_COLUMNS = [("average_badge", "average_badge"), ("player_rank", "player_rank_initial_display_rank")]
-RANK_UPDATE = "DO UPDATE SET average_badge = EXCLUDED.average_badge, player_rank = EXCLUDED.player_rank"
+RANK_COLUMNS = [("average_badge", "average_badge"), ("player_rank", "player_rank_initial_display_rank"),
+                ("rank_progress_initial", "player_rank_initial_flat_progress"),
+                ("rank_progress_final", "player_rank_final_flat_progress"),
+                ("rank_change_desired", "player_rank_desired_progress_change"),
+                ("shield_consumed", "player_rank_consumed_demotion_protection"),
+                ("shields_initial", "player_rank_initial_demotion_protection_games"),
+                ("win_streak_initial", "player_rank_initial_win_streak"),
+                ("calibration_games", "player_rank_initial_calibration_games"),
+                ("rank_outcome", "CAST(player_match_outcome AS VARCHAR)")]
+RANK_UPDATE = "DO UPDATE SET " + ", ".join(f"{c} = EXCLUDED.{c}" for c, _ in RANK_COLUMNS)
 STAT_EXPRESSIONS = [(c, f'CAST(list_max(mp."stats.{c}") AS INTEGER)') for c in STAT_COLUMNS]
 DUCKDB_THREADS = int(os.environ.get("DUCKDB_THREADS", "16"))   # remote reads wait on the network:
                                                                 # more parallel requests than CPU cores helps
@@ -106,6 +123,7 @@ def duckdb_source(files: list[str]) -> duckdb.DuckDBPyConnection:
         con.execute("SET enable_http_metadata_cache = true")    # read each file's footer once per run
     # views can't take query parameters, so the file list is inlined as a quoted SQL literal
     file_list = "[" + ", ".join("'" + f.replace("'", "''") + "'" for f in files) + "]"
+    con.execute("SET preserve_insertion_order = false")    # hand rows over as soon as any file has them
     con.execute(f"CREATE VIEW match_player AS SELECT * FROM read_parquet({file_list}, union_by_name = true)")
     return con
 
@@ -129,7 +147,7 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
     # stats). The API's files currently store TIMESTAMP WITH TIME ZONE; older dumps used TIMESTAMP.
     cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
     col_type = cols["start_time"]
-    rank = [(c, f"mp.{src_col}" if src_col in cols else "NULL") for c, src_col in RANK_COLUMNS]
+    rank = rank_exprs(cols)
     columns = COLUMNS + rank + (STAT_EXPRESSIONS if with_stats else [])
     has_bans = "banned_hero_ids" in cols
     log.info("Damage/healing stats: %s  |  bans: %s",
@@ -147,7 +165,8 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
           AND (CAST(mp.match_mode AS VARCHAR) = 'Ranked' OR TRY_CAST(mp.match_mode AS INTEGER) = 4)
     """
     params = [start, end] if "ZONE" in col_type.upper() else [start.replace(tzinfo=None), end.replace(tzinfo=None)]
-    cur = src.execute(query, params)
+    with Heartbeat("reading the week's rows"):
+        cur = src.execute(query, params)
     names = [c for c, _ in columns]
     i_match, i_start = names.index("match_id"), names.index("start_time")
     total = n_ban_matches = 0
@@ -176,6 +195,109 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
         log.info("Bans recorded for %s matches (a match can span two batches, so this may count a few twice)",
                  f"{n_ban_matches:,}")
     return total
+
+
+def rank_exprs(cols: dict) -> list[tuple[str, str]]:
+    """(column, DuckDB expression) for the rank columns; NULL for any the files don't have."""
+    out = []
+    for c, src_col in RANK_COLUMNS:
+        name = src_col.split("(")[-1].split(" ")[0]          # the source column inside a CAST(...)
+        out.append((c, src_col.replace(name, f"mp.{name}") if name in cols else "NULL"))
+    return out
+
+
+class Heartbeat:
+    """Logs every 30 s while a slow step (remote parquet scan) hasn't produced anything yet."""
+
+    def __init__(self, what: str, every: float = 30.0):
+        self.what, self.every, self.stop = what, every, threading.Event()
+
+    def __enter__(self):
+        t0 = time.time()
+
+        def beat():
+            while not self.stop.wait(self.every):
+                log.info("  still %s... %.0fs", self.what, time.time() - t0)
+        threading.Thread(target=beat, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+
+
+def week_match_range(conn, start: datetime, end: datetime) -> tuple[int, int, int] | None:
+    """(min match_id, max match_id, rows) already in match_player for this range."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT MIN(match_id), MAX(match_id), COUNT(*) FROM match_player "
+                    "WHERE start_time >= %s AND start_time < %s", (start, end))
+        lo, hi, n = cur.fetchone()
+    return (lo, hi, n) if n else None
+
+
+def backfill_ranks(src, conn, start: datetime, end: datetime) -> int:
+    """Fill the rank columns of rows already in match_player for [start, end); nothing else is touched.
+    Returns rows updated."""
+    rng = week_match_range(conn, start, end)
+    if not rng:
+        log.warning("  no rows in match_player for this range yet: run the normal ingest for it first")
+        return 0
+    lo, hi, n_have = rng
+    cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
+    rank = rank_exprs(cols)
+    missing = [c for c, e in rank if e == "NULL"]
+    if missing:
+        log.warning("  these files don't have: %s (left NULL)", ", ".join(missing))
+    col_type = cols["start_time"]
+    names = ["match_id", "account_id"] + [c for c, _ in rank]
+    # match_id bounds skip whole files / row groups fast (files are split by match_id); start_time keeps it exact
+    query = f"""
+        SELECT mp.match_id, mp.account_id, {", ".join(e for _, e in rank)}
+        FROM match_player mp
+        WHERE mp.match_id BETWEEN ? AND ?
+          AND mp.start_time >= CAST(? AS {col_type}) AND mp.start_time < CAST(? AS {col_type})
+          AND (CAST(mp.match_mode AS VARCHAR) = 'Ranked' OR TRY_CAST(mp.match_mode AS INTEGER) = 4)
+    """
+    params = [lo, hi] + ([start, end] if "ZONE" in col_type.upper()
+                         else [start.replace(tzinfo=None), end.replace(tzinfo=None)])
+    log.info("  %s rows to fill, match_id %s..%s", f"{n_have:,}", lo, hi)
+    t0 = time.time()
+    with Heartbeat("scanning the files for this week's match_ids"):
+        cur = src.execute(query, params)
+        first = cur.fetchmany(BATCH_SIZE)
+    total = 0
+    rows = first
+    sets = ", ".join(f"{c} = s.{c}" for c in names[2:])
+    with conn.cursor() as pc:
+        pc.execute("CREATE TEMP TABLE IF NOT EXISTS _stage_ranks AS SELECT " + ", ".join(names)
+                   + " FROM match_player LIMIT 0")
+    conn.commit()
+    while rows:
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        for r in rows:
+            w.writerow(["" if v is None else v for v in r])
+        buf.seek(0)
+        with conn.cursor() as pc:
+            pc.execute("TRUNCATE _stage_ranks")
+            pc.copy_expert(f"COPY _stage_ranks ({', '.join(names)}) FROM STDIN WITH (FORMAT csv)", buf)
+            # the dump stores some rows twice (identical): DISTINCT ON keeps UPDATE to one source row per target
+            pc.execute(f"""UPDATE match_player m SET {sets}
+                           FROM (SELECT DISTINCT ON (match_id, account_id) * FROM _stage_ranks) s
+                           WHERE m.match_id = s.match_id AND m.account_id = s.account_id""")
+            total += pc.rowcount
+        conn.commit()
+        log.info("  updated %s / %s rows (%.0fs)", f"{total:,}", f"{n_have:,}", time.time() - t0)
+        rows = cur.fetchmany(BATCH_SIZE)
+    return total
+
+
+def parse_weeks(spec: str) -> list[int]:
+    """"1-13" or "1,3,5-7" -> [1, ..., 13]."""
+    out = []
+    for part in spec.split(","):
+        a, _, b = part.partition("-")
+        out += list(range(int(a), int(b or a) + 1))
+    return out
 
 
 def rebuild_rosters(conn, start: datetime, end: datetime) -> tuple[int, int]:
@@ -245,11 +367,18 @@ def main() -> int:
                    help="YYYY-MM-DD; ingests the last week completed before this date (default today)")
     g.add_argument("--week", type=int, help="week number to ingest")
     g.add_argument("--period", help="a period from register_period.py (also loads its comparison period)")
+    g.add_argument("--weeks", help="several weeks in one run, e.g. 1-13 (with --ranks-only)")
     ap.add_argument("--source-files", nargs="+", help="local/remote parquet files instead of the manifest")
     ap.add_argument("--with-stats", action="store_true",
                     help="also load the 13 damage/healing stats (~10x more download)")
+    ap.add_argument("--ranks-only", action="store_true",
+                    help="only fill the rank columns of rows already loaded (fast backfill)")
     args = ap.parse_args()
 
+    if args.ranks_only:
+        return ranks_only(args)
+    if args.weeks:
+        raise SystemExit("--weeks is for --ranks-only; for full ingests run one --week at a time")
     what, start, end, week = resolve_range(args)
     log.info("%s: %s -> %s (UTC, end exclusive)", what, f"{start:%Y-%m-%d %H:%M}", f"{end:%Y-%m-%d %H:%M}")
 
@@ -271,6 +400,37 @@ def main() -> int:
         return 0
     except Exception:
         log.exception("Ingest failed for %s", what)   # full traceback, non-zero exit
+        conn.rollback()
+        return 1
+    finally:
+        conn.close()
+
+
+def ranks_only(args) -> int:
+    ranges = []
+    if args.weeks:
+        ranges = [(f"Week {w}", *week_bounds(w)) for w in parse_weeks(args.weeks)]
+    else:
+        what, start, end, _ = resolve_range(args)
+        ranges = [(what, start, end)]
+    conn = connect()
+    try:
+        ensure_schema(conn)                      # adds the rank columns if this DB predates them
+        files = args.source_files or parquet_urls("match_player")
+        log.info("Reading %s parquet file(s) (footers are read once, then reused for every week)", len(files))
+        with Heartbeat("reading file footers"):
+            src = duckdb_source(files)
+            src.execute("DESCRIBE match_player").fetchall()
+        done = 0
+        for what, start, end in ranges:
+            log.info("%s: %s -> %s, rank columns only", what, f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}")
+            n = backfill_ranks(src, conn, start, end)
+            log.info("%s: %s rows updated", what, f"{n:,}")
+            done += n
+        log.info("Done: %s rows updated across %s range(s)", f"{done:,}", len(ranges))
+        return 0 if done else 1
+    except Exception:
+        log.exception("Rank backfill failed")
         conn.rollback()
         return 1
     finally:

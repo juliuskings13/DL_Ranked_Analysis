@@ -158,6 +158,16 @@ CREATE TABLE IF NOT EXISTS patch_periods (
 ALTER TABLE match_player ADD COLUMN IF NOT EXISTS average_badge SMALLINT;
 ALTER TABLE match_player ADD COLUMN IF NOT EXISTS player_rank SMALLINT;
 ALTER TABLE match_hero_roster ADD COLUMN IF NOT EXISTS average_badge SMALLINT;
+-- Rank progress per player per match (the API's player_rank_* fields). Flat progress: 1000 points per
+-- subrank step, 7 steps per tier (subrank VI spans 2000); from 70000 the player is Eternus.
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS rank_progress_initial INT;     -- points going in
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS rank_progress_final INT;       -- points after
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS rank_change_desired INT;       -- what the match should award, before shields
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS shield_consumed BOOLEAN;       -- a demotion shield was used
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS shields_initial SMALLINT;      -- shields held going in
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS win_streak_initial SMALLINT;   -- win streak going in
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS calibration_games SMALLINT;    -- placement games left going in
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS rank_outcome VARCHAR(16);      -- Win / Loss / Penalized / NotScored ...
 
 -- the period a patch / release period is compared against (e.g. the 7 days before it)
 ALTER TABLE patch_periods ADD COLUMN IF NOT EXISTS compare_to VARCHAR(100);

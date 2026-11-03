@@ -21,6 +21,7 @@ logs/
 *.parquet
 *.csv
 !sample_data/*.csv
+patches/
 
 # --- game art (Valve's assets; re-download with scripts/ingest_hero_icons.py) ---
 assets/
