@@ -1,0 +1,17 @@
+# Season recap video (season_summary.py cards). Pass --order season_recap, or copy into the season folder
+# as order.txt. Format: pattern | chapter title | options (see patch_notes.txt).
+hook*                        | Intro
+season_numbers               | Season 1 in numbers
+season_rank_distribution     | Where everyone ended up
+season_placement_outcomes    | What happened after placements
+season_underplaced           | Were players placed too low?
+season_rank_over_time        | How the ladder moved
+season_climb_by_winrate      | Do losing players climb?
+season_climb_by_games        | Does playing more make you climb?
+season_points_kept           | Points won, lost and kept
+season_shields               | What shields actually did
+season_loss_protection       | When does a loss demote you?
+season_below_peak            | Finished below their best
+season_sim_vs_real           | The simulation vs reality
+season_missing_matches       | How many matches are missing?
+closer*                      | Final thoughts

@@ -53,9 +53,9 @@ CHART_MODULES = [
     "hero_wr_total_matches_split_column", "pick_rate_winrate_scatter", "balance_wr_distribution",
     "archetype_stacking", "matchup_bubble_chart", "hero_strength_and_scaling", "match_duration",
     "hero_duo_synergy_table", "most_freq_comps", "comp_uniqueness", "week_over_week",
-    "hero_spotlight", "rank_performance", "patch_notes",
+    "hero_spotlight", "rank_performance", "patch_notes", "season_summary",
 ]
-DEFAULT_BUILD_S = 4.0       # seconds for the card to draw itself in
+DEFAULT_BUILD_S = 6.0       # seconds for a chart to draw itself in (cards can suggest their own: draw.build_s)
 DEFAULT_HOLD_S = 3.0        # seconds on the finished card (before any highlight beats)
 CROSSFADE_S = 0.35          # highlight on/off transition
 CODECS = {
@@ -77,7 +77,7 @@ class Beat:
 @dataclass
 class Scene:
     card: str
-    build: float = DEFAULT_BUILD_S
+    build: float | None = None      # None = the card's own suggested build time (or DEFAULT_BUILD_S)
     hold: float = DEFAULT_HOLD_S
     beats: list[Beat] = field(default_factory=list)
     name: str | None = None
@@ -105,7 +105,7 @@ def read_scenes(path: Path) -> list[Scene]:
             if not row.get("card") or row["card"].startswith("#"):
                 continue
             scenes.append(Scene(card=row["card"],
-                                build=float(row.get("build") or DEFAULT_BUILD_S),
+                                build=float(row["build"]) if row.get("build") else None,
                                 hold=float(row.get("hold") or DEFAULT_HOLD_S),
                                 beats=parse_beats(row.get("highlight")),
                                 name=row.get("name") or None))
@@ -116,9 +116,13 @@ def read_scenes(path: Path) -> list[Scene]:
 def collect_cards(data_dir: Path, **opts) -> dict:
     """{card name: draw(progress, highlight)} across every chart script."""
     out = {}
-    # a patch folder (made by patch_notes.py) only has patch cards; a week folder never has changes.csv
-    modules = ["patch_notes"] if (Path(data_dir) / "changes.csv").exists() else \
-        [m for m in CHART_MODULES if m != "patch_notes"]
+    # a patch folder (patch_notes.py) and a season folder (season_summary.py) only have their own cards
+    if (Path(data_dir) / "changes.csv").exists():
+        modules = ["patch_notes"]
+    elif (Path(data_dir) / "season_meta.json").exists():
+        modules = ["season_summary"]
+    else:
+        modules = [m for m in CHART_MODULES if m not in ("patch_notes", "season_summary")]
     for mod_name in modules:
         try:
             mod = importlib.import_module(mod_name)
@@ -146,7 +150,8 @@ def ease(t: float) -> float:
 def render_scene(scene: Scene, pool, out_path: Path, fps: int, codec: str) -> float:
     draw = _CARDS[scene.card]
     layout = T.card_layout(draw(1.0, None))           # lock the finished card's layout
-    n_build = max(2, round(scene.build * fps))
+    build = scene.build if scene.build is not None else getattr(draw, "build_s", DEFAULT_BUILD_S)
+    n_build = max(2, round(build * fps))
     build_jobs = [(scene.card, i / (n_build - 1), None, layout) for i in range(n_build)]
     beat_jobs = [(scene.card, 1.0, tuple(sorted(b.names)) if b.names else None, layout) for b in scene.beats]
 
@@ -197,7 +202,9 @@ def main() -> int:
     what.add_argument("--card", help="one card by name (see --list)")
     what.add_argument("--all", action="store_true", help="every card with default timing")
     what.add_argument("--scenes", type=Path, help="CSV of clips to render (see docstring)")
-    ap.add_argument("--build", type=float, default=DEFAULT_BUILD_S, help="build-in seconds")
+    ap.add_argument("--build", type=float, default=None,
+                    help=f"build-in seconds (default: the card's own pace, e.g. ~1s per line on text cards, "
+                         f"else {DEFAULT_BUILD_S:g}s)")
     ap.add_argument("--hold", type=float, default=DEFAULT_HOLD_S, help="seconds on the finished card")
     ap.add_argument("--highlight", default="", help='beats, e.g. "Haze:3; Victor+Mirage:3; -:1"')
     ap.add_argument("--fps", type=int, default=60)
