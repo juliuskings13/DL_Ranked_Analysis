@@ -45,7 +45,7 @@ HEADER_LEGEND_Y = 0.872
 PLOT_RECT = (0.115, 0.125, 0.850, 0.715)   # starting box only; fit_card() resizes it to fill the card
 FOOTER_LINE_Y = 0.025                       # credits strip: ~27px tall
 FOOTER_TEXT_Y = 0.0115
-MARGIN_X = 0.037                            # ~40px side margins
+MARGIN_X = 20 / 1080                        # 20px side margins
 
 
 def px_to_pt(px: float) -> float:

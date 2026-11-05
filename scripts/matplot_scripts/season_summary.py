@@ -11,7 +11,7 @@ Two steps:
     python season_summary.py cards [season_dir] [--sim DIR]
         the cards -> <season_dir>/graphs/ (animate.py and assemble_video.py work on the folder too)
 
-Definitions (rank progress: 1,000 points per subrank, 7,000 per rank, Eternus from 70,000)
+Definitions (rank progress: 1,000 points per tier, 7,000 per rank, Eternus from 70,000)
     placement match   calibration_games > 0 going in
     placed at         progress after the last placement match (calibration_games = 1 going in; the earlier ones
                       sit near 0 until it), else the first ranked match after placements
@@ -37,10 +37,11 @@ Cards (video order: orders/season_recap.txt)
     season_climb_by_games        median climb by games played, one line per win rate
     season_points_kept           points won, lost and kept per 100 games (+ the sim's "kept")
     season_shields               shields per 100 games and points per shield, real vs sim
-    season_loss_protection       when a loss that would drop a subrank actually demoted, by shields held
+    season_games_per_rank        games needed per tier and per rank at each win rate, real vs the sims
     season_below_peak            share who finished below their best rank, real vs sim
     season_sim_vs_real           points per 100 games: real vs both sims, with games needed per rank
     season_missing_matches       how many ranked matches the public data is missing
+    season_missing_skew          recorded win rate vs estimated real win rate once missing games are added back
 """
 from __future__ import annotations
 
@@ -68,8 +69,7 @@ WR_WINDOWS = [(f"{w}%", w, w - 1, w + 1) for w in (45, 48, 50, 52, 55, 60)]
 WR_COLORS = ["#ef6363", "#f0a35e", "#ffd073", "#9bd17f", "#41d67e", "#4dabf7"]
 GAME_EDGES = [30, 50, 75, 100, 125, 150, 175, 200, 225, 250, 100_000]
 GAME_LABELS = ["30–49", "50–74", "75–99", "100–124", "125–149", "150–174", "175–199", "200–224", "225–249", "250+"]
-CLIMB_EDGES = [-np.inf, 0, 1, 2, 3, np.inf]
-CLIMB_LABELS = ["fell", "+0–1 rank", "+1–2", "+2–3", "+3 or more"]
+CLIMB_LABELS = ["fell", "same rank", "+1 rank", "+2 ranks", "+3 or more"]
 CLIMB_COLORS = [T.RED, "#8a8f98", "#9bd17f", "#41d67e", "#4dabf7"]
 RANK_GROUPS = [("Low (Initiate–Acolyte)", (1, 2, 3), "#4dabf7"), ("Mid (Sentinel–Emissary)", (4, 5, 6, 7), "#ffd43b"),
                ("High (Oracle+)", (8, 9, 10, 11), "#da77f2")]
@@ -84,8 +84,8 @@ def rank_of(progress) -> np.ndarray:
     return np.where(p >= ETERNUS_PTS, 11, np.floor(p / RANK_PTS) + 1).clip(1, 11)
 
 
-def subrank_index(progress) -> np.ndarray:
-    """Badge position on one scale (6 subranks per rank, VI = two steps), the sims' (rank, tier) equivalent."""
+def tier_index(progress) -> np.ndarray:
+    """Badge position on one scale (6 tiers per rank, VI = two steps), the sims' (rank, tier) equivalent."""
     p = np.asarray(progress, dtype=float)
     step = np.floor(p / 1000)
     idx = np.floor(step / 7) * 6 + np.minimum(step % 7, 5)
@@ -95,17 +95,32 @@ def subrank_index(progress) -> np.ndarray:
 # =============================================================================
 # EXPORT (PostgreSQL -> season folder)
 # =============================================================================
-SQL_STAGE = """
+# Tier start in flat progress: 1,000 points per step, 7 steps per rank, tier VI = the last two steps.
+TIER_START = "((pi / 1000 - CASE WHEN (pi / 1000) % 7 = 6 THEN 1 ELSE 0 END) * 1000)"
+# Valve's match record leaves out one kind of demotion: a loss at a tier's 0 points with no shields is stored as
+# no change (final = initial, and "shield consumed"), but the player's next match starts 300 lower with fresh
+# shields. Those rows are corrected to initial + desired change, and their shield flag dropped.
+SQL_STAGE = f"""
 CREATE TEMP TABLE season_m AS
-SELECT account_id, start_time,
-       rank_progress_initial AS pi, rank_progress_final AS pf, rank_change_desired AS d,
-       COALESCE(shield_consumed, false) AS sc, COALESCE(calibration_games, 0) > 0 AS placement,
-       COALESCE(calibration_games, 0) AS cal, shields_initial AS si,
-       rank_outcome AS o,
-       lag(rank_progress_final) OVER w AS prev_pf,
-       lag(COALESCE(calibration_games, 0) > 0) OVER w AS prev_placement
-FROM match_player
-WHERE start_time >= %(start)s AND start_time < %(end)s AND rank_progress_final IS NOT NULL
+WITH r AS (
+    SELECT account_id, match_id, start_time,
+           rank_progress_initial AS pi, rank_progress_final AS pf_raw, rank_change_desired AS d,
+           COALESCE(shield_consumed, false) AS sc_raw, COALESCE(calibration_games, 0) AS cal,
+           shields_initial AS si, rank_outcome AS o
+    FROM match_player
+    WHERE start_time >= %(start)s AND start_time < %(end)s AND rank_progress_final IS NOT NULL
+), c AS (
+    SELECT *, (d < 0 AND COALESCE(si, 0) = 0 AND pf_raw = pi AND pi BETWEEN 1000 AND 69999
+               AND pi = {TIER_START.replace('%', '%%')}) AS hidden_demotion
+    FROM r
+)
+SELECT account_id, start_time, pi,
+       CASE WHEN hidden_demotion THEN pi + d ELSE pf_raw END AS pf,
+       d, (sc_raw AND NOT hidden_demotion) AS sc, cal > 0 AS placement, cal, si, o, hidden_demotion,
+       pi - CASE WHEN pi < 70000 THEN {TIER_START.replace('%', '%%')} ELSE 70000 END AS in_tier,
+       lag(CASE WHEN hidden_demotion THEN pi + d ELSE pf_raw END) OVER w AS prev_pf,
+       lag(cal > 0) OVER w AS prev_placement
+FROM c
 WINDOW w AS (PARTITION BY account_id ORDER BY start_time, match_id);
 ANALYZE season_m;
 """
@@ -129,6 +144,12 @@ SELECT account_id,
                         AND prev_pf <> pi)                       AS gaps,
        COALESCE(sum(abs(pi - prev_pf)) FILTER (WHERE NOT placement AND prev_pf IS NOT NULL
                                                AND NOT prev_placement AND prev_pf <> pi), 0) AS gap_points,
+       COALESCE(sum(pi - prev_pf) FILTER (WHERE NOT placement AND prev_pf IS NOT NULL
+                                          AND NOT prev_placement AND prev_pf <> pi), 0) AS gap_net,
+       count(*) FILTER (WHERE NOT placement AND prev_pf IS NOT NULL AND NOT prev_placement
+                        AND pi - prev_pf BETWEEN 1 AND 430)      AS gap_win1,
+       count(*) FILTER (WHERE NOT placement AND prev_pf IS NOT NULL AND NOT prev_placement
+                        AND pi - prev_pf BETWEEN -300 AND -1)    AS gap_loss1,
        min(start_time) AS first_match, max(start_time) AS last_match
 FROM season_m GROUP BY account_id
 """
@@ -150,16 +171,17 @@ SELECT LEAST(pi / 7000 + 1, 11) AS rank,
        COALESCE(sum(-d) FILTER (WHERE d < 0), 0)   AS points_at_stake
 FROM season_m WHERE NOT placement GROUP BY 1 ORDER BY 1
 """
-# Losses that would take a player below their subrank (fewer than 300 points into it): how often they were
+# Losses that would take a player below their tier (fewer than 300 points into it): how often they were
 # protected or demoted, by shields held going in and by being at exactly 0 points
 SQL_PROTECTION = """
-SELECT LEAST(si, 5) AS shields_held, (pi %% 1000 = 0) AS at_zero,
+SELECT LEAST(si, 5) AS shields_held, (in_tier = 0) AS at_zero,
        count(*)                                         AS losses,
        count(*) FILTER (WHERE sc)                       AS shielded,
-       count(*) FILTER (WHERE pf < pi - pi %% 1000)     AS demoted,
+       count(*) FILTER (WHERE pf < pi - in_tier)        AS demoted,
+       count(*) FILTER (WHERE hidden_demotion)          AS corrected,
        avg(pf - pi)                                     AS avg_change
 FROM season_m
-WHERE NOT placement AND d = -300 AND pi BETWEEN 1000 AND 69999 AND pi %% 1000 < 300 AND si IS NOT NULL
+WHERE NOT placement AND d = -300 AND pi BETWEEN 1000 AND 69999 AND in_tier < 300 AND si IS NOT NULL
 GROUP BY 1, 2 ORDER BY 2, 1
 """
 SQL_CHANGES = """
@@ -226,14 +248,30 @@ def load(data_dir: Path) -> dict:
     for c in ("points_won", "points_lost", "shields_used"):
         if c in p:
             p[f"{c}_100"] = 100 * p[c] / g
+    if "gap_net" in p:
+        estimate_true_wr(p)
     if "peak_progress" in p:
-        p["below_peak"] = subrank_index(p["peak_progress"].fillna(0)) > subrank_index(p["end_progress"].fillna(0))
+        p["below_peak"] = tier_index(p["peak_progress"].fillna(0)) > tier_index(p["end_progress"].fillna(0))
     return {"meta": meta, "players": p,
             "weekly": pd.read_csv(data_dir / "weekly_ranks.csv"),
             "losses": pd.read_csv(data_dir / "losses_by_rank.csv"),
             "changes": pd.read_csv(data_dir / "rank_changes.csv"),
             "protection": (pd.read_csv(data_dir / "loss_protection.csv")
                            if (data_dir / "loss_protection.csv").exists() else None)}
+
+
+def estimate_true_wr(p: pd.DataFrame) -> None:
+    """Missing matches per player: how many (a floor: points unaccounted for / 300, at least one per gap), the
+    exact net points they were worth (rank change between recorded matches), how many of them were wins (net points
+    solved with the player's own average win and loss value), and the win rate with them added back in.
+    Losses at a tier's 0-point floor leave no trace, so missing losses are undercounted: wr_adj leans high."""
+    n = np.ceil(p["gap_points"] / POINTS_PER_LOSS).clip(lower=p["gaps"])
+    win_val = (p["points_won"] / p["wins"].replace(0, np.nan)).fillna(320)
+    loss_val = (p["points_lost"] / p["losses"].replace(0, np.nan)).fillna(200)
+    w = ((p["gap_net"] + n * loss_val) / (win_val + loss_val)).clip(lower=0).clip(upper=n)
+    p["est_missing"] = n
+    p["missing_wins"] = w
+    p["wr_adj"] = 100 * (p["wins"] + w) / (p["decided"] + n).replace(0, np.nan)
 
 
 def has(d: dict, *cols) -> bool:
@@ -271,9 +309,11 @@ def outcomes_by_wr(p: pd.DataFrame) -> pd.DataFrame:
     q = qualified(p)
     rows = []
     for label, w, lo, hi in WR_WINDOWS:
-        c = in_window(q, lo, hi)["climb"]
-        shares = pd.cut(c, CLIMB_EDGES, labels=CLIMB_LABELS, right=False).value_counts(normalize=True)
-        rows.append({"window": label, "n": len(c), **{k: 100 * shares.get(k, 0) for k in CLIMB_LABELS}})
+        g = in_window(q, lo, hi)
+        delta = (g["end_rank"] - g["placed_rank"]).to_numpy()
+        n = max(len(g), 1)
+        shares = [(delta < 0).sum(), (delta == 0).sum(), (delta == 1).sum(), (delta == 2).sum(), (delta >= 3).sum()]
+        rows.append({"window": label, "n": len(g), **{k: 100 * v / n for k, v in zip(CLIMB_LABELS, shares)}})
     return pd.DataFrame(rows)
 
 
@@ -377,6 +417,10 @@ def sim_table(sims: dict, p: pd.DataFrame) -> pd.DataFrame | None:
 def _phases(progress: float) -> tuple[float, float, float]:
     return (T.ease_out_cubic(T.phase(progress, 0, 0.15)), T.ease_out_cubic(T.phase(progress, 0.15, 0.85)),
             T.ease_out_cubic(T.phase(progress, 0.8, 0.98)))
+
+
+def _count(v: float) -> str:
+    return f"{v / 1000:.1f}k" if v >= 1000 else f"{v:.0f}"
 
 
 def _k(v, _=None) -> str:
@@ -514,8 +558,8 @@ def render_placement_outcomes(d: dict, progress: float = 1.0, highlight=None):
     unfinished = int(d["players"]["unfinished"].sum())
     p_frame, p_bars, p_lab = _phases(progress)
     fig, ax = _card(d, "WHAT HAPPENED AFTER PLACEMENTS",
-                    f"{stop:.0f}% stopped within {MIN_GAMES} games  ·  {unfinished:,} more started placements and "
-                    "never played a ranked match after",
+                    f"{stop:.0f}% stopped within {MIN_GAMES} games  ·  {unfinished:,} more never finished "
+                    "placements",
                     f"stopped early = under {MIN_GAMES} recorded games after placing  ·  everyone else: rank now vs "
                     "rank placed  ·  players whose placements are in the data", p_frame)
     labels = [f"{RANK_TIER_NAMES[int(r)]}  ({int(n):,})" for r, n in zip(t["rank"], t["n"])]
@@ -564,7 +608,7 @@ def render_rank_over_time(d: dict, progress: float = 1.0, highlight=None):
     p_frame, p_bars, p_lab = _phases(progress)
     fig, ax = _card(d, "HOW THE LADDER MOVED, WEEK BY WEEK",
                     f"active players: {int(total.iloc[0]):,} in week 1 → {int(total.iloc[-1]):,} in week "
-                    f"{int(total.index[-1])}  ·  labels = share of that week",
+                    f"{int(total.index[-1])}  ·  labels = players, share of that week",
                     "each player counted once per week they played, at their rank after their last match that week",
                     p_frame)
     weeks = counts.index.to_numpy()
@@ -574,9 +618,12 @@ def render_rank_over_time(d: dict, progress: float = 1.0, highlight=None):
         v = counts[col].to_numpy(float)
         ax.bar(weeks[:n_show], v[:n_show], 0.78, bottom=bottom[:n_show], color=color, zorder=3, label=name)
         for xi, b, vi, s in zip(weeks[:n_show], bottom[:n_show], v[:n_show], shares[col].to_numpy()[:n_show]):
-            if vi >= total.max() * 0.06:
+            if vi >= total.max() * 0.09:
+                ax.text(xi, b + vi / 2, f"{_count(vi)}\n{s:.0f}%", ha="center", va="center", color=T.BG,
+                        fontsize=T.px_to_pt(12), fontweight="bold", linespacing=1.0)
+            elif vi >= total.max() * 0.045:
                 ax.text(xi, b + vi / 2, f"{s:.0f}%", ha="center", va="center", color=T.BG,
-                        fontsize=T.px_to_pt(13), fontweight="bold")
+                        fontsize=T.px_to_pt(12), fontweight="bold")
         bottom += v
     ax.set_xticks(weeks, [str(int(k)) for k in weeks])
     ax.set_xlim(weeks.min() - 0.6, weeks.max() + 0.6)
@@ -599,8 +646,8 @@ def render_climb_by_wr(d: dict, progress: float = 1.0, highlight=None):
     neg_up = 100 * (neg["climb"] > 0).mean() if len(neg) else np.nan
     fig, ax = _card(d, "DO LOSING PLAYERS CLIMB?",
                     f"{neg_up:.0f}% of players under 50% still ended above their placement",
-                    f"climb = rank now minus placement, in ranks  ·  win rate from recorded matches, "
-                    f"players within ±1% of each win rate", p_frame, MIN_GAMES)
+                    "rank now vs rank placed (Initiate → Seeker = +1 rank)  ·  win rate ±1%, from recorded matches",
+                    p_frame, MIN_GAMES)
     x = np.arange(len(t))
     bottom = np.zeros(len(t))
     for col, color in zip(CLIMB_LABELS, CLIMB_COLORS):
@@ -658,26 +705,47 @@ def render_points_kept(d: dict, sims: dict, progress: float = 1.0, highlight=Non
     p = d["players"]
     won, lost, kept = by_window(p, "points_won_100"), by_window(p, "points_lost_100"), by_window(p, "per100")
     sim = sims.get("with shields")
+    sv = [float(sim["net100"].get(w, np.nan)) for _, w, _, _ in WR_WINDOWS] if sim is not None else None
     p_frame, p_bars, p_lab = _phases(progress)
-    k45 = kept[0]
     fig, ax = _card(d, "POINTS WON, LOST AND KEPT",
-                    f"per 100 games: a 45% player wins {won[0]:,.0f}, loses {lost[0]:,.0f} and keeps {k45:,.0f}",
+                    f"per 100 games: a 45% player wins {won[0]:,.0f}, loses {lost[0]:,.0f} and keeps {kept[0]:,.0f}",
                     "real players, recorded matches only, win rate ±1%" +
-                    ("  ·  ◆ = what the simulation (with shields) keeps" if sim is not None else ""),
-                    p_frame, MIN_GAMES)
+                    ("  ·  kept bar: blue = what the simulation keeps, gold on top = what real players keep beyond it"
+                     if sv else ""), p_frame, MIN_GAMES)
     x = np.arange(len(WR_WINDOWS))
     bw = 0.26
-    for k, (vals, label, color) in enumerate(((won, "won", T.GREEN), (lost, "lost", T.RED), (kept, "kept", T.GOLD))):
+    fs = T.px_to_pt(12)
+    for k, (vals, label, color) in enumerate(((won, "won", T.GREEN), (lost, "lost", T.RED))):
         ax.bar(x + (k - 1) * bw, np.nan_to_num(vals) * p_bars, bw * 0.92, color=color, zorder=3, label=label)
         if p_lab > 0:
             for xi, v in zip(x, vals):
                 if not np.isnan(v):
                     ax.text(xi + (k - 1) * bw, v * p_bars + 250, f"{v / 1000:.1f}k", ha="center", va="bottom",
-                            color=color, fontsize=T.px_to_pt(12), fontweight="bold", alpha=p_lab)
-    if sim is not None and p_lab > 0:
-        sv = [float(sim["net100"].get(w, np.nan)) for _, w, _, _ in WR_WINDOWS]
-        ax.scatter(x + bw, sv, marker="D", s=110, color=T.BG, edgecolors="#4dabf7", linewidths=2.5, zorder=5,
-                   alpha=p_lab, label="sim keeps")
+                            color=color, fontsize=fs, fontweight="bold", alpha=p_lab)
+    xk = x + bw
+    if sv is None:
+        ax.bar(xk, np.nan_to_num(kept) * p_bars, bw * 0.92, color=T.GOLD, zorder=3, label="kept")
+    else:
+        lower = np.fmin(kept, sv)
+        upper = np.abs(np.subtract(kept, sv))
+        top_color = [T.GOLD if r >= s_ else "#4dabf7" for r, s_ in zip(kept, sv)]
+        base_color = ["#4dabf7" if r >= s_ else T.GOLD for r, s_ in zip(kept, sv)]
+        ax.bar(xk, np.nan_to_num(lower) * p_bars, bw * 0.92, color=base_color, zorder=3)
+        ax.bar(xk, np.nan_to_num(upper) * p_bars, bw * 0.92, bottom=np.nan_to_num(lower) * p_bars, color=top_color,
+               zorder=3)
+        ax.bar([np.nan], [0], color=T.GOLD, label="kept (real)")
+        ax.bar([np.nan], [0], color="#4dabf7", label="kept (simulation)")
+        if p_lab > 0:
+            for xi, r, s_ in zip(xk, kept, sv):
+                if np.isnan(r) or np.isnan(s_):
+                    continue
+                hi_v, lo_v = max(r, s_), min(r, s_)
+                hi_c, lo_c = (T.GOLD, "#4dabf7") if r >= s_ else ("#4dabf7", T.GOLD)
+                ax.text(xi, hi_v * p_bars + 250, f"{hi_v / 1000:.1f}k", ha="center", va="bottom", color=hi_c,
+                        fontsize=fs, fontweight="bold", alpha=p_lab)
+                if lo_v > 900:
+                    ax.text(xi, lo_v * p_bars / 2, f"{lo_v / 1000:.1f}k", ha="center", va="center", color=T.BG,
+                            fontsize=fs, fontweight="bold", alpha=p_lab, rotation=90)
     ax.axhline(0, color=T.DIVIDER, lw=1.2, zorder=2)
     _window_ticks(ax, x)
     ax.yaxis.set_major_formatter(_k)
@@ -690,12 +758,13 @@ def render_points_kept(d: dict, sims: dict, progress: float = 1.0, highlight=Non
 
 def render_shields(d: dict, sims: dict, progress: float = 1.0, highlight=None):
     p = d["players"]
-    real100 = by_window(p, "shields_used_100")
     q = qualified(p)
-    per_shield = []
+    real100, saved100 = [], []
     for _, _, lo, hi in WR_WINDOWS:
         g = in_window(q, lo, hi)
-        per_shield.append(g["points_saved"].sum() / g["shields_used"].sum() if g["shields_used"].sum() else np.nan)
+        games = g["games"].sum()
+        real100.append(100 * g["shields_used"].sum() / games if games else np.nan)
+        saved100.append(100 * g["points_saved"].sum() / games if games else np.nan)
     sim = sims.get("with shields")
     has_sim = sim is not None and "shields100" in sim
     p_frame, p_bars, p_lab = _phases(progress)
@@ -704,27 +773,30 @@ def render_shields(d: dict, sims: dict, progress: float = 1.0, highlight=None):
     sim_avg = (sim["protected"].sum() / sim["shields_sum"].sum()) if has_sim else None
     fig, ax = _card(d, "WHAT SHIELDS ACTUALLY DID",
                     f"a shield saved {avg:.0f} points on average" +
-                    (f" (the simulation: {sim_avg:.0f})" if sim_avg else ""),
-                    "bars = shields used per 100 games  ·  label = average points each shield saved (a loss takes "
-                    "300; a shield only takes what's left in the subrank)", p_frame, MIN_GAMES)
+                    (f"  ·  the simulation: {sim_avg:.0f}" if sim_avg else ""),
+                    "bars = shields used per 100 games  ·  label = points they saved per 100 games (a loss takes 300; "
+                    "a shield only takes what's left in the tier)", p_frame, MIN_GAMES)
     x = np.arange(len(WR_WINDOWS))
-    series = [(real100, per_shield, "real players", T.GOLD)]
+    series = [(real100, saved100, "real players", T.GOLD)]
     if has_sim:
         series.append(([float(sim["shields100"].get(w, np.nan)) for _, w, _, _ in WR_WINDOWS],
-                       [float(sim["per_shield"].get(w, np.nan)) for _, w, _, _ in WR_WINDOWS],
-                       "simulation", "#4dabf7"))
+                       [float(sim["shields100"].get(w, np.nan) * sim["per_shield"].get(w, np.nan))
+                        for _, w, _, _ in WR_WINDOWS], "simulation", "#4dabf7"))
     bw = 0.8 / len(series)
     for k, (vals, pts, label, color) in enumerate(series):
         xs = x - 0.4 + bw * (k + 0.5)
         ax.bar(xs, np.nan_to_num(vals) * p_bars, bw * 0.92, color=color, zorder=3, label=label)
         if p_lab > 0:
-            for xi, v, s in zip(xs, vals, pts):
+            for xi, v, s_ in zip(xs, vals, pts):
                 if not np.isnan(v):
-                    ax.text(xi, v * p_bars + 0.3, f"{s:.0f}\npts" if not np.isnan(s) else "", ha="center",
-                            va="bottom", color=color, fontsize=T.px_to_pt(13), fontweight="bold", alpha=p_lab,
-                            linespacing=0.9)
-    top = np.nanmax([np.nanmax(s[0]) for s in series])
-    ax.set_ylim(0, top * 1.25)
+                    ax.text(xi, v * p_bars + 0.15, f"{v:.1f}", ha="center", va="bottom", color=color,
+                            fontsize=T.px_to_pt(14), fontweight="bold", alpha=p_lab)
+                    if not np.isnan(s_) and v > 2:
+                        ax.text(xi, v * p_bars / 2, f"{s_ / 1000:.1f}k\npts", ha="center", va="center",
+                                color=T.BG, fontsize=T.px_to_pt(13), fontweight="bold", alpha=p_lab,
+                                linespacing=0.9)
+    top = np.nanmax([np.nanmax(s_[0]) for s_ in series])
+    ax.set_ylim(0, top * 1.2)
     _window_ticks(ax, x)
     _label(ax, "shields used per 100 games", "y", p_frame)
     ax.grid(axis="x", visible=False)
@@ -745,7 +817,7 @@ def render_below_peak(d: dict, sims: dict, progress: float = 1.0, highlight=None
     p_frame, p_bars, p_lab = _phases(progress)
     fig, ax = _card(d, "FINISHED BELOW THEIR BEST",
                     f"{overall:.0f}% of players ended the season below the highest rank they reached",
-                    "below = a lower subrank at their last match than at their peak  ·  sims: 210-game seasons; "
+                    "below = a lower tier at their last match than at their peak  ·  sims: 210-game seasons; "
                     "real players have fewer recorded games", p_frame, MIN_GAMES)
     x = np.arange(len(WR_WINDOWS))
     bw = 0.8 / len(series)
@@ -772,23 +844,17 @@ def render_sim_vs_real(d: dict, sim: pd.DataFrame, progress: float = 1.0, highli
     r45 = sim["real"].iloc[0]
     s45 = sim["with shields"].iloc[0] if "with shields" in sim else np.nan
     sub = "rank points gained per 100 games, by win rate"
-    if r45 > 0 and s45 > 0:
-        sub = (f"at 45%: one rank every ~{100 * RANK_PTS / r45:.0f} games for real players, "
-               f"~{100 * RANK_PTS / s45:.0f} in the simulation")
+    if not np.isnan(r45) and not np.isnan(s45):
+        sub = f"at 45%, real players keep {r45:,.0f} points per 100 games; the simulation keeps {s45:,.0f}"
     fig, ax = _card(d, "THE SIMULATION VS REAL PLAYERS", sub,
-                    "label = games per rank  ·  real: ±1% win rate, recorded matches only  ·  sims: 210-game "
-                    "seasons, placed like the real ladder", p_frame, MIN_GAMES)
+                    "real: ±1% win rate, recorded matches only  ·  sims: 210-game seasons, placed like the real ladder",
+                    p_frame, MIN_GAMES)
     x = np.arange(len(sim))
     bw = 0.8 / len(series)
     for k, (col, label, color) in enumerate(series):
         v = sim[col].to_numpy(float)
         xs = x - 0.4 + bw * (k + 0.5)
         ax.bar(xs, np.nan_to_num(v) * p_bars, bw * 0.92, color=color, zorder=3, label=label)
-        if p_lab > 0:
-            for xi, vi in zip(xs, v):
-                if not np.isnan(vi) and vi > 0:
-                    ax.text(xi, vi * p_bars + 150, f"{100 * RANK_PTS / vi:.0f}", ha="center", va="bottom",
-                            color=color, fontsize=T.px_to_pt(12), fontweight="bold", alpha=p_lab)
     ax.axhline(0, color=T.DIVIDER, lw=1.2, zorder=2)
     _window_ticks(ax, x)
     ax.yaxis.set_major_formatter(lambda v, _: f"{v:+,.0f}")
@@ -799,14 +865,111 @@ def render_sim_vs_real(d: dict, sim: pd.DataFrame, progress: float = 1.0, highli
     return fig
 
 
+def render_games_per_rank(d: dict, sim: pd.DataFrame, progress: float = 1.0, highlight=None):
+    """Table: games needed per tier (1,000 points) and per rank (7,000) at each win rate, real vs the sims."""
+    cols = [("real", "REAL PLAYERS", T.GOLD)] + [(k, f"SIM, {k.upper()}", SIM_COLORS[k]) for k in SIM_FILES if k in sim]
+    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
+    fig, ax = T.new_table_card()
+    r45 = sim["real"].iloc[0]
+    s45 = sim["with shields"].iloc[0] if "with shields" in sim else np.nan
+    sub = "games needed to climb, from the points kept per 100 games"
+    if r45 > 0 and s45 > 0:
+        sub = (f"at 45%: one rank every ~{100 * RANK_PTS / r45:.0f} games for real players, "
+               f"~{100 * RANK_PTS / s45:.0f} in the simulation")
+    T.draw_header(fig, "HOW MANY GAMES TO CLIMB?", sub, alpha=p_frame)
+    T.draw_footer(fig, chart_meta(d, MIN_GAMES), alpha=p_frame)
+    _note(fig, "tier = 1,000 points (tier VI is 2,000)  ·  rank = 7,000  ·  real: ±1% win rate, recorded matches only",
+          p_frame)
+    n_rows = len(sim) + 2
+    ax.set_ylim(n_rows, 0)
+    ax.set_xlim(0, 1)
+    x0, col_w = 0.17, (1 - 0.17) / len(cols)
+    head_px, cell_px = 17, 26
+    for j, (_, name, color) in enumerate(cols):
+        cx = x0 + col_w * (j + 0.5)
+        ax.text(cx, 0.45, name, ha="center", va="center", color=color, fontsize=T.px_to_pt(head_px),
+                fontweight="bold", alpha=p_frame)
+        ax.text(cx, 1.15, "per tier  ·  per rank", ha="center", va="center", color=T.TEXT_MUTED,
+                fontsize=T.px_to_pt(14), alpha=p_frame)
+    for i, (_, r) in enumerate(sim.iterrows()):
+        a = T.ease_out_cubic(T.phase(progress, 0.15 + 0.1 * i, 0.35 + 0.1 * i))
+        y = i + 2
+        if i % 2 == 0:
+            ax.add_patch(plt_rect(-0.01, y - 0.5, 1.02, 1, T.PANEL, a))
+        ax.text(0.01, y, f"{int(r['wr'])}%", ha="left", va="center", color=T.TEXT, fontsize=T.px_to_pt(cell_px),
+                fontweight="bold", alpha=a)
+        for j, (col, _, color) in enumerate(cols):
+            v = r[col]
+            txt = "never" if not v > 0 else f"{100 * 1000 / v:.0f}  ·  {100 * RANK_PTS / v:,.0f}"
+            ax.text(x0 + col_w * (j + 0.5), y, txt, ha="center", va="center", color=color if v > 0 else T.RED,
+                    fontsize=T.px_to_pt(cell_px), fontweight="bold", alpha=a)
+    return fig
+
+
+def plt_rect(x, y, w, h, color, alpha):
+    from matplotlib.patches import Rectangle
+    return Rectangle((x, y), w, h, facecolor=color, edgecolor="none", alpha=alpha, zorder=0)
+
+
 def missing_stats(p: pd.DataFrame) -> dict:
     q = qualified(p)
     trans, gaps = q["transitions"].sum(), q["gaps"].sum()
     est_missing = np.ceil(q["gap_points"] / POINTS_PER_LOSS).clip(lower=q["gaps"])   # at least 1 per gap
     share = 100 * est_missing / (est_missing + q["games"])
-    return {"gap_rate": 100 * gaps / trans if trans else np.nan, "share": share,
-            "median": float(share.median()), "overall": 100 * est_missing.sum() / (est_missing.sum() + q["games"].sum()),
-            "n": len(q)}
+    out = {"gap_rate": 100 * gaps / trans if trans else np.nan, "share": share,
+           "median": float(share.median()), "overall": 100 * est_missing.sum() / (est_missing.sum() + q["games"].sum()),
+           "n": len(q)}
+    if "gap_net" in q:
+        single = q["gap_win1"].sum() + q["gap_loss1"].sum()
+        out |= {"net_median": float(q["gap_net"].median()), "net_mean": float(q["gap_net"].mean()),
+                "per_missing": float(q["gap_net"].sum() / max(est_missing.sum(), 1)),
+                "single_win_share": 100 * q["gap_win1"].sum() / single if single else np.nan,
+                "missing_win_share": 100 * q["missing_wins"].sum() / max(q["est_missing"].sum(), 1),
+                "recorded_wr": 100 * q["wins"].sum() / max(q["decided"].sum(), 1)}
+    return out
+
+
+def skew_table(p: pd.DataFrame) -> pd.DataFrame:
+    q = qualified(p)
+    rows = []
+    for label, w, lo, hi in WR_WINDOWS:
+        g = in_window(q, lo, hi)
+        rows.append({"window": label, "wr": w, "n": len(g), "recorded": g["wr"].mean(),
+                     "estimated": g["wr_adj"].median(), "missing_share": (100 * g["est_missing"] /
+                     (g["est_missing"] + g["games"])).median(), "missing_net": g["gap_net"].median()})
+    return pd.DataFrame(rows)
+
+
+def render_missing_skew(d: dict, progress: float = 1.0, highlight=None):
+    m = missing_stats(d["players"])
+    t = skew_table(d["players"])
+    t["gap"] = t["estimated"] - t["wr"]
+    p_frame, p_bars, p_lab = _phases(progress)
+    first = t.iloc[0]
+    fig, ax = _card(d, "ARE PLAYERS BETTER THAN THEIR STATS?",
+                    f"{m['missing_win_share']:.0f}% of the missing games were wins  ·  a {first['window']} player in "
+                    f"the data is about {first['estimated']:.1f}% for real",
+                    "bar = estimated real win rate minus the recorded one (median player)  ·  missing games' wins "
+                    "estimated from the rank points they moved", p_frame, MIN_GAMES)
+    x = np.arange(len(t))
+    v = t["gap"].to_numpy(float)
+    ax.bar(x, np.nan_to_num(v) * p_bars, 0.62, color=[T.GOLD if g >= 0 else T.RED for g in v], zorder=3)
+    span = max(np.nanmax(np.abs(v)), 0.5)
+    if p_lab > 0:
+        for xi, g, est in zip(x, v, t["estimated"]):
+            if not np.isnan(g):
+                ax.text(xi, g * p_bars + (span * 0.03 if g >= 0 else -span * 0.03), f"{g:+.1f}",
+                        ha="center", va="bottom" if g >= 0 else "top", color=T.GOLD if g >= 0 else T.RED,
+                        fontsize=T.px_to_pt(20), fontweight="bold", alpha=p_lab)
+    ax.axhline(0, color=T.DIVIDER, lw=1.2, zorder=2)
+    ax.set_ylim(min(0, np.nanmin(v)) - span * 0.15, max(0, np.nanmax(v)) + span * 0.2)
+    ax.set_xticks(x, [f"{lab}\n→ {e:.1f}%" for lab, e in zip(t["window"], t["estimated"])])
+    _label(ax, "recorded win rate  →  estimated real win rate", "x", p_frame)
+    ax.yaxis.set_major_formatter(lambda v_, _: f"{v_:+.1f}")
+    _label(ax, "win-rate points missing from the public data", "y", p_frame)
+    ax.grid(axis="x", visible=False)
+    _ax_style(ax, p_frame)
+    return fig
 
 
 def render_missing(d: dict, progress: float = 1.0, highlight=None):
@@ -842,14 +1005,14 @@ def render_protection(d: dict, progress: float = 1.0, highlight=None):
     t["demoted%"] = 100 * t["demoted"] / t["losses"]
     t["at_zero"] = t["at_zero"].astype(str).str.lower().isin(["true", "t", "1"])
     p_frame, p_bars, p_lab = _phases(progress)
-    z = t[t["at_zero"]]
+    z = t[t["at_zero"] & (t["shields_held"] == 0)]
     z_rate = 100 * z["demoted"].sum() / max(z["losses"].sum(), 1)
     fig, ax = _card(d, "WHEN DOES A LOSS ACTUALLY DEMOTE YOU?",
-                    f"at exactly 0 points in a subrank, only {z_rate:.0f}% of losses demoted, whatever the shields",
-                    "losses of 300 that would drop below the subrank  ·  the simulation assumed: "
-                    "0 shields = always demote, 1+ = never", p_frame)
+                    f"with no shields left, {z_rate:.0f}% of losses at a tier's 0 points dropped a tier",
+                    "losses of 300 that would drop below the tier  ·  demotions at 0 points are missing from the "
+                    "match record: rebuilt from the player's next match", p_frame)
     x = np.arange(6)
-    groups = [(False, "1–299 points into the subrank", T.RED), (True, "exactly 0 points", T.GOLD)]
+    groups = [(False, "1–299 points into the tier", T.RED), (True, "exactly 0 points", T.GOLD)]
     bw = 0.38
     for k, (zero, label, color) in enumerate(groups):
         g = t[t["at_zero"] == zero].set_index("shields_held").reindex(range(6))
@@ -896,15 +1059,17 @@ def cards(data_dir: Path, sim_dir: Path | None = None, **_) -> dict:
     if has(d, "points_won", "points_lost"):
         out["season_points_kept"] = lambda progress=1.0, highlight=None: render_points_kept(d, sims, progress)
     out["season_shields"] = lambda progress=1.0, highlight=None: render_shields(d, sims, progress)
-    if d["protection"] is not None and len(d["protection"]):
-        out["season_loss_protection"] = lambda progress=1.0, highlight=None: render_protection(d, progress)
+
     if has(d, "peak_progress"):
         out["season_below_peak"] = lambda progress=1.0, highlight=None: render_below_peak(d, sims, progress)
     sim = sim_table(sims, d["players"])
     if sim is not None:
         out["season_sim_vs_real"] = lambda progress=1.0, highlight=None: render_sim_vs_real(d, sim, progress)
+        out["season_games_per_rank"] = lambda progress=1.0, highlight=None: render_games_per_rank(d, sim, progress)
     if has(d, "gaps", "transitions"):
         out["season_missing_matches"] = lambda progress=1.0, highlight=None: render_missing(d, progress)
+    if has(d, "gap_net", "wr_adj"):
+        out["season_missing_skew"] = lambda progress=1.0, highlight=None: render_missing_skew(d, progress)
     return out
 
 
@@ -928,7 +1093,7 @@ def summary(data_dir: Path, sim_dir: Path | None = None) -> str:
              "", "Placed too low? (players with 30+ games):", underplaced(p).round(2).to_string(index=False),
              "", f"Started placements, no result and no ranked match after: {int(p['unfinished'].sum()):,}"]
     if d["protection"] is not None:
-        lines += ["", "Losses that would drop below the subrank (shields held, at 0 points):",
+        lines += ["", "Losses that would drop below the tier (shields held, at 0 points):",
                   d["protection"].round(1).to_string(index=False)]
     if has(d, "points_won"):
         t = pd.DataFrame({"window": [w[0] for w in WR_WINDOWS], "won100": by_window(p, "points_won_100"),
@@ -940,6 +1105,13 @@ def summary(data_dir: Path, sim_dir: Path | None = None) -> str:
         m = missing_stats(p)
         lines += ["", f"Missing matches: gaps in {m['gap_rate']:.1f}% of transitions; at least {m['overall']:.1f}% "
                       f"of games missing overall; median player {m['median']:.1f}%"]
+        if "net_median" in m:
+            lines += [f"Points from missing matches per player: median {m['net_median']:+,.0f}, mean "
+                      f"{m['net_mean']:+,.0f}; {m['per_missing']:+.0f} per missing game",
+                      f"Single missing games we can classify: {m['single_win_share']:.1f}% wins;  all missing games "
+                      f"(estimated): {m['missing_win_share']:.1f}% wins  vs  {m['recorded_wr']:.1f}% in recorded games",
+                      "Recorded vs estimated real win rate (players with 30+ games):",
+                      skew_table(p).round(2).to_string(index=False)]
     lines += ["", "Most common rank changes (desired change, outcome, shield):", d["changes"].head(12).to_string(index=False)]
     sim = sim_table(sims, p)
     if sim is not None:
