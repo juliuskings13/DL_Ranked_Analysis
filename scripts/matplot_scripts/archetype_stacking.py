@@ -106,7 +106,7 @@ def render(df: pd.DataFrame, meta: T.ChartMeta, progress: float = 1.0,
         last = g.iloc[-1]
         probe = ax.text(0, 0, end_label(htype, last["wr"]),
                         fontsize=T.px_to_pt(END_LABEL_PX), fontweight="bold")
-        c = (probe.get_window_extent(renderer).width + 18 + 14) / ax_w
+        c = (probe.get_window_extent(renderer).width + T.dev_px(18 + 14)) / ax_w
         probe.remove()
         x_max = max(x_max, (float(last["diff"]) - c * x_min) / (1 - c))
     ax.set_xlim(x_min, x_max)
@@ -181,10 +181,10 @@ def render(df: pd.DataFrame, meta: T.ChartMeta, progress: float = 1.0,
     if ends:
         to_px = ax.transData.transform
         ys_px = [to_px((x, y))[1] for _, x, y, _, _ in ends]
-        spread = _spread_labels(ys_px, LABEL_GAP_PX)
+        spread = _spread_labels(ys_px, T.dev_px(LABEL_GAP_PX))
         inv = ax.transData.inverted()
         for (htype, x, y, a, text), y_px in zip(ends, spread):
-            x_px = to_px((x, y))[0] + 18
+            x_px = to_px((x, y))[0] + T.dev_px(18)
             lx, ly = inv.transform((x_px, y_px))
             ax.text(lx, ly, text, color=T.archetype_color(htype), fontweight="bold",
                     fontsize=T.px_to_pt(END_LABEL_PX), ha="left", va="center",

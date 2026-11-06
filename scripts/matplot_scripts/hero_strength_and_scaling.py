@@ -211,7 +211,7 @@ def render_split_scatter(t: pd.DataFrame, meta: T.ChartMeta, title: str, subtitl
         spots = place_labels(ax, [xs[k] for k in idx], [ys[k] for k in idx], [names[k] for k in idx],
                              font, SCATTER_ICON_PX / 2)
         for k, (dx, dy, ha, va) in zip(idx, spots):
-            ax.annotate(names[k], (xs[k], ys[k]), xytext=(dx, dy), textcoords="offset pixels", ha=ha, va=va,
+            ax.annotate(names[k], (xs[k], ys[k]), xytext=(T.px_to_pt(dx), T.px_to_pt(dy)), textcoords="offset points", ha=ha, va=va,
                         color=T.TEXT, fontsize=T.px_to_pt(font), fontweight="bold", alpha=l_alpha[k],
                         zorder=9, path_effects=T.STROKE)
     ax.text(0.5, -0.115, note,

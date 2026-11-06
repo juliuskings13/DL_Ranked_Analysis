@@ -95,6 +95,8 @@ def compute_limits(df: pd.DataFrame, ax, fit: bool = FIT_LIMITS,
     """Fitted: the most/least picked and best/worst heroes define the borders."""
     ok = df[df["sufficient"]] if df["sufficient"].any() else df
     bb = ax.get_window_extent()
+    bb = T.Bbox.from_bounds(bb.x0 / T.RENDER_SCALE, bb.y0 / T.RENDER_SCALE,      # real px -> card px
+                            bb.width / T.RENDER_SCALE, bb.height / T.RENDER_SCALE)
     if not fit:
         span = np.ceil(max((ok["wr_hi"] - 50).abs().max(), (ok["wr_lo"] - 50).abs().max()) + 0.6)
         return (0, np.ceil((ok["pick_rate"].max() + 6) / 10) * 10), (50 - span, 50 + span)
@@ -144,8 +146,8 @@ def _overlap(a, b) -> float:
 
 def place_labels(ax, xs, ys, names, font_px: float, marker_r: float):
     """Greedy: try 8 spots around each point, keep the one with the least overlap."""
-    pts = ax.transData.transform(np.column_stack([xs, ys]))
-    ax_box = ax.get_window_extent()
+    pts = ax.transData.transform(np.column_stack([xs, ys])) / T.RENDER_SCALE     # in card px, like font_px
+    ax_box = ax.get_window_extent().transformed(T.Affine2D().scale(1 / T.RENDER_SCALE))
     markers = [(x - marker_r, y - marker_r, x + marker_r, y + marker_r) for x, y in pts]
     gap = marker_r + 3
     cands = [(gap, 0, "left", "center"), (-gap, 0, "right", "center"),
@@ -285,7 +287,7 @@ def render(df: pd.DataFrame, box: dict, meta: T.ChartMeta, progress: float = 1.0
         spots = place_labels(ax, [xs[k] for k in idx], [ys[k] for k in idx],
                              [names[k] for k in idx], font, marker_r)
         for k, (dx, dy, ha, va) in zip(idx, spots):
-            ax.annotate(names[k], (xs[k], ys[k]), xytext=(dx, dy), textcoords="offset pixels",
+            ax.annotate(names[k], (xs[k], ys[k]), xytext=(T.px_to_pt(dx), T.px_to_pt(dy)), textcoords="offset points",
                         ha=ha, va=va, color=T.TEXT, fontsize=T.px_to_pt(font), fontweight="bold",
                         alpha=label_alpha[k], zorder=9, path_effects=T.STROKE)
     return fig

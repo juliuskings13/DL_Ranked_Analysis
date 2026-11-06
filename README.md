@@ -17,7 +17,7 @@ Each weekly run covers roughly **90,000 ranked matches** (about 1.1M player rows
 flowchart LR
     A[Deadlock Community API<br/>SQL endpoint + parquet] -->|ingest_*.py| B[(PostgreSQL<br/>match_player · match_hero_roster<br/>heroes · patch_periods)]
     B -->|query_transform.py<br/>SQL CTEs per week| C[Weekly CSV / Parquet<br/>week N_analysis/]
-    C -->|gen_visuals.py| D[1080×1080 chart cards<br/>Matplotlib · Seaborn · Pillow]
+    C -->|gen_visuals.py| D[1440×1440 chart cards<br/>Matplotlib · Seaborn · Pillow]
     D -->|animate.py| F[Animated card clips]
     F -->|assemble_video.py<br/>+ face-cam recording| E[YouTube long-form & Shorts]
 ```
@@ -25,15 +25,15 @@ flowchart LR
 | Stage | Scripts | What it does |
 |---|---|---|
 | Discover | `db_table_schema_inspect.py` | Crawls the API's table list and per-table schemas (rate-limit aware) to decide what to ingest |
-| Ingest | `ingest_dl_comm_api_parquet.py` (matches), `hero_ingest_deadlock.py`, `ingest_game_assets.py` (items, abilities, icons), `ingest_dl_comm_api_database.py`, `ingest_hero_icons.py` | Streams one week of ranked player rows from the API's parquet dump through DuckDB (date filter pushed down to the remote files), bulk-loads PostgreSQL via `COPY` into a staging table + `INSERT … ON CONFLICT` (idempotent re-runs), then rebuilds that week's team rosters from complete matches only. `--ranks-only --weeks 1-13` backfills just the rank columns of rows already loaded (see below) |
+| Ingest | `ingest_dl_comm_api_parquet.py` (matches), `hero_ingest_deadlock.py`, `ingest_game_assets.py` (items, abilities, icons, hero colors and name logos), `ingest_dl_comm_api_database.py`, `ingest_hero_icons.py` | Streams one week of ranked player rows from the API's parquet dump through DuckDB (date filter pushed down to the remote files), bulk-loads PostgreSQL via `COPY` into a staging table + `INSERT … ON CONFLICT` (idempotent re-runs), then rebuilds that week's team rosters from complete matches only. `--ranks-only --weeks 1-13` backfills just the rank columns of rows already loaded (see below) |
 | Validate | `validate_week.py` | Data-quality gate: unknown heroes, incomplete matches, inconsistent winners, duplicate heroes, duration mismatches, roster coverage. Non-zero exit stops the pipeline |
 | Transform | `query_transform.py` | Stages the week's complete matches once in temp tables, then runs every export against them (win rates, duo synergies, archetype differentials and matchups, duration histograms, comp frequency) |
 | Orchestrate | `run_pipeline.py`, `register_period.py` | Runs heroes → ingest → validate → transform → charts → insights for a week or a registered patch/release period; stops at the first failing stage and can resume with `--from` |
-| Visualize | `gen_visuals.py` + one script per chart, `animate.py` | Renders every chart for the target week as 1080×1080 cards; `animate.py` turns any card into a video clip (build-in, hold, highlight beats) piped to ffmpeg |
-| Patch notes | `patch_notes.py` | Parses a balance patch (API feed, link or text file) into one row per change with a buff / nerf / rework call and the % size of the change; you correct the calls in `changes.csv` (and whole-hero / item calls in `overall.csv`), it learns from your corrections, then renders opener, overview, size, per-hero, per-item-slot, general and winners & losers cards |
+| Visualize | `gen_visuals.py` + one script per chart, `animate.py` | Renders every chart for the target week as square cards, laid out on a 1080×1080 design grid and rendered at 1440×1440 (`RENDER_SCALE` in `theme.py`; `DL_RENDER_SCALE=1` for 1080); `animate.py` turns any card into a video clip (build-in, hold, highlight beats) piped to ffmpeg |
+| Patch notes | `patch_notes.py` | Parses a balance patch (API feed, link or text file) into one row per change with a buff / nerf / rework call and the % size of the change; you correct the calls in `changes.csv` (and whole-hero / item calls in `overall.csv`), it learns from your corrections, then renders opener, overview, size, per-hero, per-item-slot, general and winners & losers cards. Change cards use hero-colored textured backgrounds, the hero's name logo, and a big "old → new  %" line in a display font (Anton) for every numeric change |
 | Video assembly | `assemble_video.py`, `orders/*.txt` | Cuts a face-cam recording by a LosslessCut segment CSV (one segment per card), renders each card's animation to the length of its take, composites face + card at 2560×1440, joins the segments (stream copy), writes YouTube chapters and renders 9:16 shorts for flagged segments. Segment order and chapter titles come from an order file (`orders/patch_notes.txt` preset, or an `order.txt` per video) |
 | Insights | `insights.py` | Each chart script reports its findings as data (effect size + confidence); builds a running order per video (meta report weekly; game length / teams and the class deep dives rotating) with findings ranked per card, plus a rotating hero-spotlight video (one card per hero from `hero_spotlight.py`: trend, game length, partners; the roster split into four fixed groups) and a shorts list. Writes an outline and a matching `animate.py` scenes CSV for each into `plans/` |
-| Shared | `db_config.py`, `pipeline_common.py`, `theme.py`, `chart_stats.py` | DB settings from env (UTC sessions); schema, week math and bulk-load helpers; card layout & palette; statistics (Wilson CIs, sample thresholds, pick rate) |
+| Shared | `db_config.py`, `pipeline_common.py`, `theme.py`, `chart_stats.py` | DB settings from env (UTC sessions); schema, week math and bulk-load helpers; card layout, render resolution, palette and fonts; statistics (Wilson CIs, sample thresholds, pick rate) |
 
 ## Data model
 
@@ -150,6 +150,11 @@ python scripts/matplot_scripts/patch_notes.py parse --latest     # -> patches/<d
 python scripts/matplot_scripts/patch_notes.py cards patches/<folder>/
 python scripts/matplot_scripts/animate.py patches/<folder>/        # animated clips of the cards
 ```
+
+Change cards need the display font (`DL_DISPLAY_FONT`, default `/usr/local/share/fonts/a/Anton_Regular.ttf`)
+and `pip install cairosvg` to draw the SVG name logos in `assets/hero_names/` (falls back to the
+display font without it). `ingest_game_assets.py` stores each hero's UI color and downloads logos
+for heroes that don't have one yet.
 
 ### Assembling a video
 

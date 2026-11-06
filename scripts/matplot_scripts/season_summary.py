@@ -619,10 +619,10 @@ def render_rank_over_time(d: dict, progress: float = 1.0, highlight=None):
         v = counts[col].to_numpy(float)
         ax.bar(weeks[:n_show], v[:n_show], 0.78, bottom=bottom[:n_show], color=color, zorder=3, label=name)
         for xi, b, vi, s in zip(weeks[:n_show], bottom[:n_show], v[:n_show], shares[col].to_numpy()[:n_show]):
-            if vi >= total.max() * 0.09:
+            if vi >= total.max() * 0.055:          # room for two lines (~30px)
                 ax.text(xi, b + vi / 2, f"{_count(vi)}\n{s:.0f}%", ha="center", va="center", color=T.BG,
                         fontsize=T.px_to_pt(12), fontweight="bold", linespacing=1.0)
-            elif vi >= total.max() * 0.045:
+            elif vi >= total.max() * 0.028:
                 ax.text(xi, b + vi / 2, f"{s:.0f}%", ha="center", va="center", color=T.BG,
                         fontsize=T.px_to_pt(12), fontweight="bold")
         bottom += v
@@ -682,23 +682,28 @@ def render_climb_by_games(d: dict, progress: float = 1.0, highlight=None):
         g = t[t["window"] == label].set_index("bin").reindex(GAME_LABELS)
         y = g["median"].to_numpy(float) * RANK_PTS
         upto = int(np.floor(p_lines * (len(x) - 1))) + 1
-        ax.plot(x[:upto], y[:upto], color=color, lw=3, zorder=3, solid_capstyle="round")
+        ax.plot(x[:upto], y[:upto], color=color, lw=4.5, zorder=3, solid_capstyle="round",
+                path_effects=[T.pe.Stroke(linewidth=7, foreground=T.BG), T.pe.Normal()])
         for xi, yi, n in zip(x[:upto], y[:upto], g["n"].to_numpy()[:upto]):
             if not np.isnan(yi):
-                ax.scatter([xi], [yi], s=70, zorder=4, color=color if n >= MIN_POINT_N else T.BG,
-                           edgecolors=color, linewidths=2)
+                ax.scatter([xi], [yi], s=120, zorder=4, color=color if n >= MIN_POINT_N else T.BG,
+                           edgecolors=color, linewidths=2.5)
         ok = np.where(~np.isnan(y))[0]
         if len(ok) and p_lines > 0.95:
             ax.text(ok[-1] + 0.2, y[ok[-1]], label, color=color, fontsize=T.px_to_pt(18), fontweight="bold",
                     va="center", ha="left", path_effects=T.STROKE)
-    lo_y = np.nanmin(t["median"].to_numpy(float)) * RANK_PTS
-    ax.set_ylim(bottom=0 if lo_y >= 0 else lo_y * 1.15)
+    med = t["median"].to_numpy(float) * RANK_PTS
+    lo_y, hi_y = min(0.0, np.nanmin(med)), np.nanmax(med)
+    lo_t, hi_t = int(np.floor(lo_y / RANK_PTS)) * RANK_PTS, int(np.ceil(hi_y / RANK_PTS)) * RANK_PTS
+    ax.set_yticks(np.arange(lo_t, hi_t + 1, RANK_PTS))                      # one tick per rank (7,000)
+    ax.set_ylim(lo_y * 1.15 if lo_y < 0 else 0, hi_y * 1.06)     # after the ticks, which would widen it
+    ax.yaxis.set_major_formatter(lambda v, _: "0" if v == 0 else
+                                 f"{v / 1000:+.0f}k\n{v / RANK_PTS:+.0f} rank" + ("s" if abs(v) > RANK_PTS else ""))
     ax.set_xlim(-0.4, len(x) - 1 + 1.1)
     ax.set_xticks(x, GAME_LABELS, rotation=35, ha="right", rotation_mode="anchor")
     _label(ax, "recorded ranked games this season", "x", p_frame)
-    ax.yaxis.set_major_formatter(lambda v, _: ("+" if v > 0 else "") + _k(v))
-    _label(ax, "rank points gained (median)  ·  7,000 = one rank", "y", p_frame)
-    ax.grid(axis="x", visible=False)
+    _label(ax, "rank points gained (median)", "y", p_frame)
+    ax.grid(axis="both", visible=True, color=T.DIVIDER, lw=1.0, alpha=0.8 * p_frame, zorder=1)
     _ax_style(ax, p_frame)
     return fig
 
@@ -983,15 +988,19 @@ def render_missing_skew(d: dict, progress: float = 1.0, highlight=None):
     return fig
 
 
+MISSING_X_MAX = 80          # missing-matches histogram stops here; the last bar collects everyone above
+
+
 def render_missing(d: dict, progress: float = 1.0, highlight=None):
     m = missing_stats(d["players"])
     p_frame, p_bars, p_lab = _phases(progress)
     fig, ax = _card(d, "HOW MANY MATCHES ARE MISSING?",
                     f"at least {m['overall']:.0f}% of ranked games aren't in the public data",
                     f"gap = rank going in ≠ rank after the last recorded match ({m['gap_rate']:.0f}% of them)  ·  "
-                    "missing points ÷ 300 = games  ·  a floor: a missed win + loss cancel", p_frame, MIN_GAMES)
-    share = m["share"].clip(upper=99.9)
-    edges = np.arange(0, 101, 5)
+                    "missing points ÷ 300 = games  ·  a floor: a missed win + loss cancel  ·  "
+                    f"last bar includes everyone above {MISSING_X_MAX}%", p_frame, MIN_GAMES)
+    share = m["share"].clip(upper=MISSING_X_MAX - 0.1)       # the last bar holds everyone at 75% or more
+    edges = np.arange(0, MISSING_X_MAX + 1, 5)
     counts, _ = np.histogram(share, edges)
     pct = 100 * counts / max(counts.sum(), 1)
     ax.bar(edges[:-1] + 2.5, pct * p_bars, 4.4, color=T.GOLD, zorder=3)
@@ -1000,7 +1009,7 @@ def render_missing(d: dict, progress: float = 1.0, highlight=None):
         ax.text(m["median"] + 1, max(pct) * 1.02, f"median player:\n{m['median']:.0f}% missing", color=T.TEXT,
                 fontsize=T.px_to_pt(17), fontweight="bold", va="top", ha="left", alpha=p_lab,
                 path_effects=T.STROKE)
-    ax.set_xlim(0, 100)
+    ax.set_xlim(0, MISSING_X_MAX)
     ax.set_ylim(0, max(pct) * 1.12 + 0.5)
     ax.xaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
     ax.yaxis.set_major_formatter(lambda v, _: f"{v:g}%")

@@ -57,7 +57,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # --- layout -----------------------------------------------------------------------
 MAIN_W, MAIN_H = 2560, 1440          # face 1120x1440 on the left + card 1440x1440 on the right
-CARD_PX = 1440                       # cards are drawn at 1080 and upscaled (lanczos) to this
+CARD_PX = 1440                       # card panel size; cards already render at 1440 (theme RENDER_SCALE), else lanczos-scaled to this
 SOURCE_W, SOURCE_H = 2560, 1440      # recordings are normalized to this first, so the crops below always fit
 # camera areas (w:h:x:y on the 2560x1440 recording). Main: x 480-1600, full height (1:1 pixels, no scaling).
 # Shorts: x 300-1700, top 300 px cut; trimmed from the bottom to the 1440x1120 panel's shape, then scaled.

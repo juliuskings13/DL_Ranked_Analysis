@@ -31,7 +31,7 @@ week_num = days_elapsed // 7
 project_root = Path(os.environ.get("DL_PROJECT_ROOT", Path.home() / "Projects" / "DL_ranked_analysis"))
 target_dir = Path(args.dir) if args.dir else project_root / f"week{week_num}_analysis"
 
-# Every script renders 1080x1080 cards via theme.py / chart_stats.py
+# Every script renders cards designed on a 1080 grid, output at T.OUT_PX (1440) via theme.py / chart_stats.py
 plotting_scripts = [
     "pick_rate_winrate_scatter.py",            # replaces hero_wr_matches_representation.py
     "hero_wr_total_matches_split_column.py",   # top/bottom 10 + per-archetype win-rate cards

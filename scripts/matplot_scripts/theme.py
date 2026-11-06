@@ -1,5 +1,6 @@
 """
-theme.py — shared look, paths and 1080x1080 card frame for every Deadlock chart.
+theme.py — shared look, paths and card frame for every Deadlock chart (designed on a 1080x1080 grid,
+rendered at OUT_PX = 1440x1440 by default; see RENDER_SCALE).
 
 Every chart script should:
     from theme import *            # or import theme as T
@@ -29,14 +30,26 @@ import matplotlib.patheffects as pe  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.transforms import Affine2D, Bbox  # noqa: E402,F401  (scripts convert real px <-> card px)
 from PIL import Image, ImageDraw  # noqa: E402
 
 # =============================================================================
 # CANVAS
 # =============================================================================
-CARD_PX = 1080          # every chart is a 1080x1080 card
-DPI = 100
-CARD_IN = CARD_PX / DPI
+CARD_PX = 1080          # every chart is DESIGNED on a 1080x1080 grid ("card pixels"; all sizes in the scripts use it)
+DESIGN_DPI = 100        # card pixels per inch: px_to_pt() converts with this, whatever the output resolution
+CARD_IN = CARD_PX / DESIGN_DPI
+# Output resolution: the same layout rendered RENDER_SCALE times sharper. 4/3 = 1440x1440 (what the videos use),
+# 1.0 = the old 1080x1080. Override per run with DL_RENDER_SCALE=1.
+RENDER_SCALE = float(os.environ.get("DL_RENDER_SCALE", 4 / 3))
+OUT_PX = int(round(CARD_PX * RENDER_SCALE))     # real pixel size of a saved card / animation frame
+DPI = OUT_PX / CARD_IN                          # matplotlib dpi that turns the 1080 design into OUT_PX pixels
+
+
+def dev_px(px: float) -> float:
+    """Card pixels -> real output pixels (for things matplotlib doesn't scale: figimage, image arrays,
+    window extents)."""
+    return px * RENDER_SCALE
 
 # Figure-fraction layout of the card (0,0 = bottom-left)
 HEADER_TITLE_Y = 0.950
@@ -50,7 +63,7 @@ MARGIN_X = 20 / 1080                        # 20px side margins
 
 def px_to_pt(px: float) -> float:
     """Matplotlib sizes are points; we think in card pixels."""
-    return px * 72.0 / DPI
+    return px * 72.0 / DESIGN_DPI
 
 
 # =============================================================================
@@ -365,7 +378,7 @@ def fit_card(fig: Figure, iterations: int = 4) -> None:
 def save_card(fig: Figure, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     fit_card(fig)
-    fig.savefig(path, dpi=DPI, facecolor=BG)   # no bbox_inches: card must stay exactly 1080x1080
+    fig.savefig(path, dpi=DPI, facecolor=BG)   # no bbox_inches: card must stay exactly OUT_PX x OUT_PX
     plt.close(fig)
     return path
 
@@ -444,9 +457,11 @@ def hero_icon(name: str, size_px: int, ring_hex: str | None = None,
     left, top = (src.width - side) // 2, (src.height - side) // 2
     src = src.crop((left, top, left + side, top + side))
 
+    size_px = max(int(round(size_px * RENDER_SCALE)), 8)     # card px -> real pixels
+    ring_px = ring_px * RENDER_SCALE
     ss = 4  # supersample for smooth edges
     big = size_px * ss
-    inner = big - 2 * ring_px * ss if ring_hex else big
+    inner = int(big - 2 * ring_px * ss) if ring_hex else big
     icon = src.resize((inner, inner), Image.Resampling.LANCZOS)
 
     canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
@@ -472,13 +487,15 @@ def placeholder_icon(name: str, size_px: int, ring_hex: str | None = None,
     from matplotlib import font_manager
     from PIL import ImageFont
 
+    size_px = max(int(round(size_px * RENDER_SCALE)), 8)     # card px -> real pixels
+    ring_px = ring_px * RENDER_SCALE
     ss = 4
     big = size_px * ss
     img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     ring = ring_hex or NEUTRAL
     d.ellipse([0, 0, big - 1, big - 1], fill=rgba(ring))
-    pad = ring_px * ss
+    pad = int(ring_px * ss)
     d.ellipse([pad, pad, big - 1 - pad, big - 1 - pad], fill=rgba(PANEL))
     initials = "".join(w[0] for w in name.replace("&", " ").split()[:2]).upper() or "?"
     font_path = font_manager.findfont(font_manager.FontProperties(family=FONT_FAMILY, weight="bold"))
@@ -561,7 +578,8 @@ def layout_columns(widths_px: dict, total_px: float, gap_px: float = 22) -> dict
 
 
 def add_icon(ax, arr: np.ndarray, xy: tuple[float, float], zorder: float = 5):
-    """Place an icon array at data coords on ax (pixel size = array size)."""
+    """Place an icon array at data coords on ax (drawn at the array's size in real pixels: icons from
+    hero_icon()/icon_any() are already made at RENDER_SCALE)."""
     from matplotlib.offsetbox import AnnotationBbox, OffsetImage
     ab = AnnotationBbox(OffsetImage(arr, zoom=1, dpi_cor=False), xy, frameon=False,
                         zorder=zorder, box_alignment=(0.5, 0.5))
@@ -665,9 +683,9 @@ def outlined_text(fig: Figure, x: float, y: float, s: str, size_px: float, color
 
 @lru_cache(maxsize=64)
 def textured_bg(color: str, seed: int = 7, strength: float = 0.42) -> np.ndarray:
-    """1080x1080 RGB float array: dark base -> color gradient (glow from the top right), a vignette and
+    """OUT_PX x OUT_PX RGB float array: dark base -> color gradient (glow from the top right), a vignette and
     fixed film grain (same seed every frame, so animations don't flicker)."""
-    n = CARD_PX
+    n = OUT_PX
     yy, xx = np.mgrid[0:n, 0:n] / (n - 1)
     base = np.array(rgba(blend(BG, "#000000", 0.35))[:3], float) / 255
     col = np.array(rgba(blend(color, "#000000", 0.25))[:3], float) / 255
@@ -678,7 +696,7 @@ def textured_bg(color: str, seed: int = 7, strength: float = 0.42) -> np.ndarray
     vign = 1 - 0.35 * (((xx - 0.5) ** 2 + (yy - 0.5) ** 2) / 0.5) ** 1.3
     img *= vign[..., None]
     rng = np.random.default_rng(seed)
-    grain = rng.normal(0, 0.028, (n, n))
+    grain = rng.normal(0, 0.028, (n, n))     # grain size stays ~1 real pixel at any scale
     try:                                         # slightly clumped grain reads more like paper/film
         from PIL import ImageFilter
         g = Image.fromarray(((grain / 0.12 + 0.5).clip(0, 1) * 255).astype(np.uint8))
@@ -724,7 +742,8 @@ _warned_svg = []
 @lru_cache(maxsize=256)
 def name_art(name: str, height_px: int, max_w_px: int) -> np.ndarray | None:
     """The hero's name logo (assets/hero_names/<Name>.svg or .png) as RGBA float array with a dark outline
-    and drop shadow baked in, scaled to height_px (narrower if it would exceed max_w_px). None if missing."""
+    and drop shadow baked in, scaled to height_px card px (narrower if it would exceed max_w_px), in real
+    output pixels, with a 10 card-px transparent border. None if missing."""
     from PIL import ImageFilter
     src = None
     for ext in (".png", ".svg"):
@@ -734,6 +753,7 @@ def name_art(name: str, height_px: int, max_w_px: int) -> np.ndarray | None:
             break
     if src is None:
         return None
+    height_px, max_w_px = int(round(height_px * RENDER_SCALE)), int(round(max_w_px * RENDER_SCALE))  # -> real px
     im = _rasterize_svg(src, height_px) if src.suffix == ".svg" else Image.open(src).convert("RGBA")
     if im is None:
         if not _warned_svg:
@@ -745,14 +765,15 @@ def name_art(name: str, height_px: int, max_w_px: int) -> np.ndarray | None:
         im = im.crop(bbox)
     scale = min(height_px / im.height, max_w_px / im.width)
     im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.LANCZOS)
-    pad = 10
+    pad = int(round(10 * RENDER_SCALE))
     canvas = Image.new("RGBA", (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
     a = Image.new("L", canvas.size, 0)
     a.paste(im.getchannel("A"), (pad, pad))
-    outline = a.filter(ImageFilter.MaxFilter(5))
+    k = RENDER_SCALE
+    outline = a.filter(ImageFilter.MaxFilter(int(2 * round(2 * k) + 1)))
     shadow = Image.new("L", canvas.size, 0)
-    shadow.paste(a, (3, 4))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(4)).point(lambda v: int(v * 0.7))
+    shadow.paste(a, (int(round(3 * k)), int(round(4 * k))))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(4 * k)).point(lambda v: int(v * 0.7))
     dark = Image.new("RGBA", canvas.size, (5, 9, 10, 0))
     dark.putalpha(Image.fromarray(np.maximum(np.asarray(outline), np.asarray(shadow)).astype(np.uint8)))
     canvas = Image.alpha_composite(canvas, dark)

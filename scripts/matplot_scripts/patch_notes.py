@@ -101,10 +101,37 @@ SLOT_COLORS = {"weapon": "#f0a43b", "vitality": "#5fcf6b", "spirit": "#b46cf0"}
 # item cards: title and item names in the slot's color (same as the matching hero class colors)
 SLOT_ACCENT = {"weapon": T.ARCHETYPE_COLORS["marksman"], "vitality": T.ARCHETYPE_COLORS["brawler"],
                "spirit": T.ARCHETYPE_COLORS["mystic"]}
-ITEM_MIN_FONT = 21          # item cards never shrink lines below this (phone legibility); they split instead
-ITEM_HEAD_SCALE = 1.75      # item name band, icon and name size vs. a normal group heading (icon ~2x)
+
+# =============================================================================
+# CARD TEXT SIZES  (edit freely; all in card px on the 1080 grid, shown 4/3 larger at 1440)
+# =============================================================================
+# Change lines: each card uses the biggest line font that fits, between MIN and MAX. Below MIN the hero /
+# item list splits into more cards instead of shrinking.
+HERO_MIN_FONT = 25          # hero cards
+HERO_MAX_FONT = 44
+ITEM_MIN_FONT = 21          # item cards
+ITEM_MAX_FONT = 50
+MIN_LIST_FONT = 18          # general-changes cards (minimum)
+GENERAL_MAX_FONT = 24       # general-changes cards (maximum)
+# Everything below scales with the line font f of the card:
+HEAD_FONT_SCALE = 2.0       # ability / item name headings = f x this (display font)
+BIG_SCALE = 1.8             # the big "1.25s -> 0.75s" number line = f x this (keep a bit under HEAD_FONT_SCALE)
+PCT_TAG_SCALE = 0.72        # the "-40%" after the numbers, vs. the number size
+ICON_SCALE = 1.3            # ability / item icon height vs. its heading size
+ITEM_HEAD_SCALE = 1.0       # item headings vs. ability headings (1.0 = same)
+LABEL_GAP = 1.32            # line spacing of wrapped text (x f)
+ROW_GAP = 0.5               # space after each change (x f)
+# Hero card header (fixed sizes):
+HERO_ICON_PX = 165          # hero portrait, top right
+HERO_NAME_PX = 129          # height of the hero name logo, left of the portrait (display-font name if no logo)
+STAMP_PX = 51               # BUFFED / NERFED stamp, top left
+SUMMARY_MAX_PX = 28         # "2 buffs (avg 14%) · 0 nerfs  ·  card 1/2" under the stamp (shrinks to fit) ...
+SUMMARY_MIN_GOOD_PX = 22    # ... and the name logo is narrowed so the summary fits at least this big
+NAME_MIN_W_PX = 300         # but the name always gets at least this much width
+# Item / general card header:
+TITLE_MAX_PX = 62           # "VITALITY ITEMS"
+SUBTITLE_MAX_PX = 23
 ITEMS_PER_CARD_MAX = 8
-ITEM_MAX_FONT = 27          # cards with few items grow their text up to this instead of leaving space empty
 
 # stats where LESS is better for whoever owns them (compared on the raw, signed value)
 LOWER_BETTER = [r"cool ?downs?", r"\bcd\b", r"cast (time|delay)", r"\bdelay\b", r"\bcosts?\b", r"\bprice\b",
@@ -740,9 +767,11 @@ def _blank_card():
 
 
 def _img(path: str | None, size: int, alpha: float = 1.0) -> np.ndarray | None:
-    """An icon file as an RGBA array, size x size px (aspect kept, centered), faded by alpha."""
+    """An icon file as an RGBA array, size x size card px (made at RENDER_SCALE, so it is drawn at real
+    pixels by add_icon / _place), aspect kept, centered, faded by alpha."""
     if not path or not Path(path).exists():
         return None
+    size = max(int(round(size * T.RENDER_SCALE)), 4)
     from PIL import Image
     im = Image.open(path).convert("RGBA")
     im.thumbnail((size, size), Image.LANCZOS)
@@ -751,6 +780,12 @@ def _img(path: str | None, size: int, alpha: float = 1.0) -> np.ndarray | None:
     arr = np.asarray(canvas).astype(np.float32) / 255
     arr[..., 3] *= alpha
     return arr
+
+
+def _place(fig, arr: np.ndarray, x_px: float, y_top_px: float, zorder: float = 3) -> None:
+    """Draw an image array (already at real pixels) with its top-left corner at card px (x_px, y_top_px)."""
+    fig.figimage(arr, xo=int(round(T.dev_px(x_px))), yo=int(round(T.OUT_PX - T.dev_px(y_top_px) - arr.shape[0])),
+                 origin="upper", zorder=zorder)
 
 
 def render_overview(summary: pd.DataFrame, kind: str, meta: dict, progress: float = 1.0,
@@ -917,8 +952,7 @@ def render_closer(heroes: pd.DataFrame, items: pd.DataFrame, meta: dict, item_ic
                 yy = y0 + 76 + j * row_h
                 arr = T.icon_any(r["subject"], icon, color, a) if is_hero else _img(item_icons.get(r["subject"]), icon, a)
                 if arr is not None:
-                    fig.figimage(arr if arr.dtype != np.float32 else arr, xo=int(cx), yo=int(T.CARD_PX - yy - icon),
-                                 origin="upper", zorder=3)
+                    _place(fig, arr, cx, yy)
                 tx = cx + icon + 14
                 name_px = T.fit_font_px([r["subject"]], col_w - icon - 18, max_px=26, min_px=14)
                 fig.text(tx / T.CARD_PX, 1 - (yy + icon * 0.32) / T.CARD_PX, r["subject"], color=T.TEXT,
@@ -1002,22 +1036,16 @@ def _wrap(text: str, size_px: float, width_px: float) -> list[str]:
 
 
 # --- change-list cards: layout -----------------------------------------------------
-BIG_SCALE = 1.65            # the "1.25s -> 0.75s" line is this many times the line font, in the display font
-HEAD_BOOST_PX = 9           # ability / item headings: this much bigger (px) than before (~ +6.5pt)
-LABEL_GAP = 1.32            # line spacing of wrapped text (x font)
-ROW_GAP = 0.5               # space after each change (x font)
-
-
 def _head_px(f: float, head_scale: float) -> float:
-    return f * (0.92 if head_scale == 1 else 1.15) + HEAD_BOOST_PX
+    return f * HEAD_FONT_SCALE * head_scale
 
 
 def _icon_px(f: float, head_scale: float) -> int:
-    return int(round(_head_px(f, head_scale) * 1.65))
+    return int(round(_head_px(f, head_scale) * ICON_SCALE))
 
 
 def _group_h(f: float, head_scale: float) -> float:
-    return max(_icon_px(f, head_scale) + 10, _head_px(f, head_scale) * 1.6)
+    return max(_icon_px(f, head_scale) + 10, _head_px(f, head_scale) * 1.3)
 
 
 def _row_lines(r: dict, f: float, width_px: float) -> list[str]:
@@ -1062,9 +1090,9 @@ def list_build_s(groups) -> float:
     return INTRO_S + ROW_SECONDS * sum(len(rows) for _, rows in groups)
 
 
-HERO_ICON_PX = 165          # hero change cards: big hero icon top right
-HERO_MAX_FONT = 32          # hero cards with few changes grow their text up to this instead of leaving space empty
-HERO_NAME_PX = 86           # height of the hero name logo (or the display-font name if there's no logo)
+COL_GAP_PX = 36
+TWO_COL_MIN_GAIN = 2.0      # two columns only when they allow a font at least this much (px) bigger ...
+TWO_COL_MAX_WRAP = 0.25     # ... and wrap at most this share of lines more than one column would
 LIST_TOP_PX = {"hero": 12 + HERO_ICON_PX + 18, "other": 136}
 LIST_BOTTOM_PX = (1 - T.FOOTER_LINE_Y) * T.CARD_PX - 20
 LIST_H_PX = {k: LIST_BOTTOM_PX - v for k, v in LIST_TOP_PX.items()}
@@ -1091,6 +1119,46 @@ def _layout_columns(groups, col_w: float, height_px: float, ncols: int, min_font
         if max(heights) <= height_px:
             return font, cols, True
     return min_font, cols, False
+
+
+def _extra_lines(plans) -> int:
+    """Wrapped lines beyond the first, summed over every change in the plans."""
+    return sum(max(len(b) - 1, 0) for plan in plans for k, b, _, _ in plan if k == "row")
+
+
+def _best_layout(groups, width_px: float, height_px: float, min_font: float, max_font: float,
+                 head_scale: float, ncols=1):
+    """The layout to draw: ncols is a column count or a tuple of counts to choose from, e.g. (1, 2).
+    Picks the one allowing the biggest font; two columns (whole groups per column, so only with 2+
+    groups) need to beat one column by TWO_COL_MIN_GAIN px without much more wrapping.
+    Returns (ncols, font, [plan per column], col_w, fits)."""
+    options = ncols if isinstance(ncols, (tuple, list)) else (ncols,)
+    found = []
+    for n in options:
+        if n > 1 and len(groups) < 2:
+            continue
+        col_w = (width_px - COL_GAP_PX * (n - 1)) / n
+        if n == 1:
+            font, plan, fits = _layout_list(groups, col_w, height_px, min_font, head_scale=head_scale,
+                                            max_font=max_font)
+            plans = [plan]
+        else:
+            font, plans, fits = _layout_columns(groups, col_w, height_px, n, min_font, head_scale, max_font)
+        found.append((n, font, plans, col_w, fits))
+    if not found:                               # e.g. only multi-column options for a single group
+        return _best_layout(groups, width_px, height_px, min_font, max_font, head_scale, 1)
+    best = found[0]
+    for cand in found[1:]:
+        rows = max(sum(1 for plan in cand[2] for k, *_ in plan if k == "row"), 1)
+        # more columns only for short lines: long sentences squeezed into a column wrap into walls of text,
+        # so then the card stays one column (and splits into more cards instead)
+        if _extra_lines(cand[2]) - _extra_lines(found[0][2]) > TWO_COL_MAX_WRAP * rows:
+            continue
+        better_fit = cand[4] and not best[4]
+        bigger = cand[1] >= best[1] + TWO_COL_MIN_GAIN
+        if better_fit or (cand[4] == best[4] and bigger):
+            best = cand
+    return best
 
 
 # --- change-list cards: drawing ----------------------------------------------------
@@ -1120,7 +1188,7 @@ def _draw_big_values(fig, x_px: float, y_px: float, r: dict, f: float, width_px:
     arrow = "→"
     sp = big * 0.22
     total = lambda s: (T.display_px(a_s, s) + T.text_px(arrow, s * 0.8) + T.display_px(b_s, s)  # noqa: E731
-                       + (T.display_px(tag, s * 0.72) + sp * 1.6 if tag else 0) + sp * 4)
+                       + (T.display_px(tag, s * PCT_TAG_SCALE) + sp * 1.6 if tag else 0) + sp * 4)
     if total(big) > width_px:
         big = max(f * 1.05, big * width_px / total(big))
     col = _call_color(r["final"])
@@ -1134,11 +1202,13 @@ def _draw_big_values(fig, x_px: float, y_px: float, r: dict, f: float, width_px:
     T.outlined_text(fig, x / T.CARD_PX, base, b_s, big, col, alpha, display=True, va="baseline", ha="left")
     if tag:
         x += T.display_px(b_s, big) + sp * 1.6
-        T.outlined_text(fig, x / T.CARD_PX, base, tag, big * 0.72, col, alpha * 0.95, display=True,
+        T.outlined_text(fig, x / T.CARD_PX, base, tag, big * PCT_TAG_SCALE, col, alpha * 0.95, display=True,
                         va="baseline", ha="left")
 
 
 def _draw_hero_header(fig, name: str, page: str, sub: str, badge, color: str, ring: str | None, alpha: float) -> None:
+    """Stamp (BUFFED / NERFED) top left with the buffs / nerfs summary under it; the hero's name logo right
+    of them, right-aligned against the portrait in the top right corner."""
     size = HERO_ICON_PX
     iax = fig.add_axes([1 - T.MARGIN_X - size / T.CARD_PX, 1 - 12 / T.CARD_PX - size / T.CARD_PX,
                         size / T.CARD_PX, size / T.CARD_PX])
@@ -1146,33 +1216,46 @@ def _draw_hero_header(fig, name: str, page: str, sub: str, badge, color: str, ri
     iax.imshow(T.icon_any(name, size, ring, alpha))
     iax.axis("off")
     x0 = T.MARGIN_X * T.CARD_PX
-    room = T.CARD_PX - 2 * x0 - size - 24 - (T.display_px(page, 40) + 14 if page else 0)
+    icon_left = T.CARD_PX - x0 - size
+    mid_y = 12 + size / 2                              # name centered on the portrait
+    # stamp, top left
+    stamp_right = x0
+    stamp_h = STAMP_PX * 1.8
+    right = icon_left - 22
+    if badge:
+        label, bcol = badge
+        # long calls ("MIXED, MOSTLY NERFED") shrink so the name keeps at least NAME_MIN_W_PX
+        room_stamp = right - NAME_MIN_W_PX - 30 - x0
+        spx_ = min(STAMP_PX, room_stamp / max(T.display_w_per_px(label) + 0.6, 1e-6))
+        pad = spx_ * 0.3
+        fig.text((x0 + pad) / T.CARD_PX, 1 - (14 + stamp_h / 2) / T.CARD_PX, label, color="#0b1011", alpha=alpha,
+                 va="center", ha="left", fontproperties=_dprop(spx_), zorder=5,
+                 bbox=dict(boxstyle="round,pad=0.3,rounding_size=0.22", fc=bcol, ec="#05090a", lw=2.5,
+                           alpha=alpha))
+        stamp_right = x0 + T.display_px(label, spx_) + 2 * pad
+    # name logo (or display-font name) between the stamp / summary and the portrait, right-aligned; it gets
+    # whatever the summary (at SUMMARY_MIN_GOOD_PX) leaves, but at least NAME_MIN_W_PX
+    if page:
+        sub = f"{sub}  ·  card {page}"
+    left_block = max(stamp_right - x0, T.text_px(sub, SUMMARY_MIN_GOOD_PX))
+    room = max(right - (x0 + left_block + 30), NAME_MIN_W_PX)
     art = T.name_art(name, HERO_NAME_PX, int(room))
     if art is not None:
         a = art.copy()
         a[..., 3] *= alpha
-        fig.figimage(a, xo=int(x0 - 10), yo=int(T.CARD_PX - 14 - a.shape[0] + 10), origin="upper", zorder=4)
-        name_right = x0 - 20 + a.shape[1]
+        w, h = a.shape[1] / T.RENDER_SCALE, a.shape[0] / T.RENDER_SCALE      # includes a 10px border
+        _place(fig, a, right - w + 10, mid_y - h / 2, zorder=4)
+        name_left = right - w + 20
     else:                                     # no logo (e.g. a brand-new hero): the name in the display font
-        px = min(HERO_NAME_PX * 1.12, room / max(T.display_w_per_px(name.upper()), 1e-6))
-        T.outlined_text(fig, x0 / T.CARD_PX, 1 - (16 + HERO_NAME_PX * 0.92) / T.CARD_PX, name.upper(), px,
-                        T.TEXT, alpha, display=True, va="baseline", ha="left", width=4)
-        name_right = x0 + T.display_px(name.upper(), px)
-    if page:
-        T.outlined_text(fig, (name_right + 14) / T.CARD_PX, 1 - (16 + HERO_NAME_PX * 0.92) / T.CARD_PX, page, 40,
-                        T.TEXT_MUTED, alpha, display=True, va="baseline", ha="left")
-    y = 14 + HERO_NAME_PX + 20 + 22                   # center of the stamp row
-    x = x0
-    if badge:
-        label, bcol = badge
-        spx = 34
-        fig.text((x + 10) / T.CARD_PX, 1 - y / T.CARD_PX, label, color="#0b1011", alpha=alpha, va="center",
-                 ha="left", fontproperties=_dprop(spx), zorder=5,
-                 bbox=dict(boxstyle="round,pad=0.32,rounding_size=0.25", fc=bcol, ec="#05090a", lw=2, alpha=alpha))
-        x += T.display_px(label, spx) + 46
-    room = T.CARD_PX - x0 - size - 20 - x
-    spx = T.fit_font_px([sub], room, max_px=23, min_px=14, bold=False)
-    T.outlined_text(fig, x / T.CARD_PX, 1 - y / T.CARD_PX, sub, spx, T.TEXT, alpha, va="center", ha="left")
+        px = min(HERO_NAME_PX * 0.95, room / max(T.display_w_per_px(name.upper()), 1e-6))
+        T.outlined_text(fig, right / T.CARD_PX, 1 - (mid_y + px * 0.36) / T.CARD_PX, name.upper(), px,
+                        T.TEXT, alpha, display=True, va="baseline", ha="right", width=4)
+        name_left = right - T.display_px(name.upper(), px)
+    # summary under the stamp, kept clear of the name
+    sy = 14 + stamp_h + 14
+    sroom = max(name_left - 20 - x0, 200)
+    spx = T.fit_font_px([sub], sroom, max_px=SUMMARY_MAX_PX, min_px=14, bold=False)
+    T.outlined_text(fig, x0 / T.CARD_PX, 1 - sy / T.CARD_PX, sub, spx, T.TEXT, alpha, va="top", ha="left")
 
 
 def _dprop(px: float):
@@ -1183,10 +1266,10 @@ def _dprop(px: float):
 
 def _draw_plain_header(fig, title: str, sub: str, accent: str | None, alpha: float) -> None:
     x0 = T.MARGIN_X * T.CARD_PX
-    tpx = min(62, (T.CARD_PX - 2 * x0) / max(T.display_w_per_px(title), 1e-6))
+    tpx = min(TITLE_MAX_PX, (T.CARD_PX - 2 * x0) / max(T.display_w_per_px(title), 1e-6))
     T.outlined_text(fig, x0 / T.CARD_PX, 1 - 76 / T.CARD_PX, title, tpx, _readable(accent) if accent else T.GOLD,
                     alpha, display=True, va="baseline", ha="left", width=4)
-    spx = T.fit_font_px([sub], T.CARD_PX - 2 * x0, max_px=23, min_px=14, bold=False)
+    spx = T.fit_font_px([sub], T.CARD_PX - 2 * x0, max_px=SUBTITLE_MAX_PX, min_px=14, bold=False)
     T.outlined_text(fig, x0 / T.CARD_PX, 1 - 108 / T.CARD_PX, sub, spx, T.TEXT_MUTED, alpha, va="center", ha="left")
 
 
@@ -1195,7 +1278,7 @@ def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta
                 badge: tuple[str, str] | None = None, group_icons: dict | None = None,
                 group_tags: dict | None = None,
                 ncols: int = 1, head_scale: float = 1.0, accent: str | None = None,
-                min_font: float | None = None, max_font: float = 24, bg: str | None = None,
+                min_font: float | None = None, max_font: float = GENERAL_MAX_FONT, bg: str | None = None,
                 page: str = "") -> "T.Figure":
     """A card listing changes over a textured background in bg's color. Group headings (abilities, items)
     in the display font with their icons; each change with numbers shows a short label and a big
@@ -1223,17 +1306,12 @@ def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta
     width_px = T.CARD_PX - 2 * x0_px
     if os.environ.get("PATCH_DEBUG"):
         print(f"  list area {title[:20]}: {bottom_px - top_px:.0f}px")
-    if ncols > 1:
-        col_gap = 36
-        col_w = (width_px - col_gap * (ncols - 1)) / ncols
-        font, col_plans, fits = _layout_columns(groups, col_w, bottom_px - top_px, ncols,
-                                                (min_font or MIN_LIST_FONT) - 2, head_scale, max_font)
-        starts = [(x0_px + c * (col_w + col_gap), cp) for c, cp in enumerate(col_plans)]
-        width_px = col_w
-    else:
-        font, plan, fits = _layout_list(groups, width_px, bottom_px - top_px, (min_font or MIN_LIST_FONT) - 2,
-                                        head_scale=head_scale, max_font=max_font)
-        starts = [(x0_px, plan)]
+    n, font, col_plans, col_w, fits = _best_layout(groups, width_px, bottom_px - top_px,
+                                                   (min_font or MIN_LIST_FONT) - 2, max_font, head_scale, ncols)
+    if os.environ.get("PATCH_DEBUG"):
+        print(f"  {title[:24]}: {n} col, font {font:.1f}px, fits={fits}")
+    starts = [(x0_px + c * (col_w + COL_GAP_PX), cp) for c, cp in enumerate(col_plans)]
+    width_px = col_w
     k = 0
     for x0_px, plan in starts:
         y = top_px
@@ -1244,7 +1322,7 @@ def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta
                 isz = _icon_px(f, head_scale)
                 gi = _img((group_icons or {}).get(body), isz, row_t(k))
                 if gi is not None:
-                    fig.figimage(gi, xo=int(gx), yo=int(T.CARD_PX - y - (gh + isz) / 2), origin="upper", zorder=3)
+                    _place(fig, gi, gx, y + (gh - isz) / 2)
                     gx += isz + f * 0.45
                 hpx = _head_px(f, head_scale)
                 tags = (group_tags or {}).get(body) or []
@@ -1360,7 +1438,6 @@ BIG_NUMBERS = True          # lines with "from X to Y": short label + big "X -> 
 
 
 LIST_W_PX = T.CARD_PX * (1 - 2 * T.MARGIN_X)
-MIN_LIST_FONT = 18                         # below this a card splits into pages instead of shrinking further
 
 
 def _paginate(groups: list[tuple[str, list[dict]]], height_px: float, ncols: int = 1,
@@ -1369,12 +1446,9 @@ def _paginate(groups: list[tuple[str, list[dict]]], height_px: float, ncols: int
     """Split into as few cards as possible with every line at MIN_LIST_FONT or larger, then even out
     the cards so the last one isn't a near-empty page in a much bigger font. keep_groups: never split
     one group (e.g. one item) across two cards."""
-    if ncols > 1:
-        col_w = (LIST_W_PX - 36 * (ncols - 1)) / ncols
-        fits0 = lambda page: _layout_columns(page, col_w, height_px, ncols, mf, head_scale)[2]  # noqa: E731
-    else:
-        fits0 = lambda page: _layout_list(page, LIST_W_PX, height_px, mf, head_scale=head_scale)[2]  # noqa: E731
     mf = min_font or MIN_LIST_FONT
+    # a page fits if any allowed column count fits it at the minimum font
+    fits0 = lambda page: _best_layout(page, LIST_W_PX, height_px, mf, mf, head_scale, ncols)[4]  # noqa: E731
     fits = lambda page: (max_groups is None or len(page) <= max_groups) and fits0(page)  # noqa: E731
     if keep_groups:
         def greedy(cap_lines: float):
@@ -1470,7 +1544,7 @@ def cards(data_dir: Path, **_) -> dict:
                                                    icons=item_icons))
     for _, h in heroes.iterrows():
         name = h["subject"]
-        pages = _paginate(hero_groups_of(df, name, names), LIST_H_PX["hero"])
+        pages = _paginate(hero_groups_of(df, name, names), LIST_H_PX["hero"], ncols=(1, 2), min_font=HERO_MIN_FONT)
         ab_icons = {}
         for ab, path in names.get("ability_icons", {}).get(name, {}).items():
             slot = names["slots"].get(name, {}).get(ab)
@@ -1489,6 +1563,7 @@ def cards(data_dir: Path, **_) -> dict:
                         render_list(n.upper(), s, g, meta,
                                     progress, highlight, icon=n, ring=T.archetype_color(types.get(n, "")),
                                     badge=(call, c), group_icons=gi, bg=hc, max_font=HERO_MAX_FONT,
+                                    min_font=HERO_MIN_FONT, ncols=(1, 2),
                                     page=f"{pg}/{total}" if total > 1 else ""))
     item_tags = {}
     for _, it in items.iterrows():
@@ -1510,7 +1585,7 @@ def cards(data_dir: Path, **_) -> dict:
             for _, it in sub_items.iterrows():
                 d = df[(df["kind"] == "item") & (df["subject"] == it["subject"])]
                 groups.append((it["subject"], [{**_row(r), "key": it["subject"]} for _, r in d.iterrows()]))
-            pages = _paginate(groups, LIST_H_PX["other"], ncols=2, keep_groups=True, min_font=ITEM_MIN_FONT,
+            pages = _paginate(groups, LIST_H_PX["other"], ncols=(1, 2), keep_groups=True, min_font=ITEM_MIN_FONT,
                               head_scale=ITEM_HEAD_SCALE, max_groups=ITEMS_PER_CARD_MAX)
             nb, nn = int((sub_items["dir"] > 0).sum()), int((sub_items["dir"] < 0).sum())
             label = slot_names.get(slot, "OTHER")
@@ -1519,7 +1594,7 @@ def cards(data_dir: Path, **_) -> dict:
                 out[key] = (lambda progress=1.0, highlight=None, g=g, p=p, total=len(pages), label=label,
                             sub=f"{len(sub_items)} items · {nb} mostly buffed · {nn} mostly nerfed":
                             render_list(f"{label} ITEMS", sub, g, meta,
-                                        progress, highlight, group_icons=item_icons, ncols=2,
+                                        progress, highlight, group_icons=item_icons, ncols=(1, 2),
                                         bg=SLOT_COLORS.get(label.lower()), page=f"({p}/{total})" if total > 1 else "",
                                         head_scale=ITEM_HEAD_SCALE, accent=SLOT_ACCENT.get(label.lower()),
                                         group_tags=item_tags,

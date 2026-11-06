@@ -1,5 +1,5 @@
 """
-animate.py — turn the weekly chart cards into 1080x1080 video clips.
+animate.py — turn the weekly chart cards into video clips (T.OUT_PX square, 1440x1440 by default).
 
 Every chart script exposes cards(data_dir) -> {name: draw(progress, highlight)}. This script
 renders each card's build-in (progress 0 -> 1) frame by frame, holds the finished card, then
@@ -157,7 +157,7 @@ def render_scene(scene: Scene, pool, out_path: Path, fps: int, codec: str) -> fl
 
     ext, enc = CODECS[codec]
     cmd = ["ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
-           "-s", f"{T.CARD_PX}x{T.CARD_PX}", "-r", str(fps), "-i", "-", *enc, str(out_path.with_suffix(ext))]
+           "-s", f"{T.OUT_PX}x{T.OUT_PX}", "-r", str(fps), "-i", "-", *enc, str(out_path.with_suffix(ext))]
     ff = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     n_frames = 0
 
