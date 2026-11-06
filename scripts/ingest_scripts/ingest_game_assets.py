@@ -8,8 +8,10 @@ What it does (safe to re-run; only new or changed things are written / downloade
                      -> Postgres `hero_abilities`
   3. icons           shop item icons   -> assets/item_icons/<item>.png
                      ability icons     -> assets/ability_icons/<hero>/<slot>_<ability>.png
-  4. game_names.json hero / ability (with slot) / item (with slot, tier) names for scripts that
-                     don't touch the database, e.g. patch_notes.py -> assets/game_names.json
+  4. game_names.json hero / ability (with slot) / item (with slot, tier) names and hero colors for
+                     scripts that don't touch the database, e.g. patch_notes.py -> assets/game_names.json
+  5. name logos      each hero's name art (SVG) -> assets/hero_names/<Hero Name>.svg, only if missing
+                     (your own files there are never overwritten)
 
 Overrides: if assets/ability_slots.csv exists (columns hero,slot,ability), its rows replace the
 API's ability names / slots. Use it if a hero's slots ever come back wrong or missing.
@@ -83,8 +85,17 @@ def build(heroes: list[dict], items: list[dict]) -> dict:
         if it.get("type") == "upgrade" and it.get("shopable") and it.get("name"):
             shop[it["name"]] = {"id": it.get("id"), "slot": it.get("item_slot_type"), "tier": it.get("item_tier"),
                                 "cost": it.get("cost"), "image": it.get("shop_image") or it.get("image")}
+    colors = {}                                          # hero -> "#rrggbb" (the game's UI color)
+    for h in playable:
+        c = h.get("colors") or {}
+        if c.get("style_hex"):
+            colors[h["name"]] = c["style_hex"].lower()
+        elif isinstance(c.get("ui"), list) and len(c["ui"]) >= 3:
+            colors[h["name"]] = "#{:02x}{:02x}{:02x}".format(*c["ui"][:3])
+    name_art = {h["name"]: (h.get("images") or {}).get("name_image") for h in playable}
     return {"heroes": sorted(hero_name[h["id"]] for h in playable), "abilities": abilities, "items": shop,
-            "hero_ids": {h["name"]: h["id"] for h in playable}}
+            "hero_ids": {h["name"]: h["id"] for h in playable}, "hero_colors": colors,
+            "name_art": {k: v for k, v in name_art.items() if v}}
 
 
 def write_db(items: list[dict], names: dict) -> None:
@@ -126,7 +137,11 @@ def download_icons(names: dict, force: bool) -> None:
                 dest = ASSETS / "ability_icons" / slug(hero) / f"{a['slot']}_{slug(a['name'])}.png"
                 a["icon"] = str(dest.relative_to(PROJECT_ROOT))
                 jobs.append((a["image"], dest))
-    todo = [(u, d) for u, d in jobs if force or not d.exists()]
+    for hero, url in names.get("name_art", {}).items():      # name logos: never replace files you already have
+        dest = ASSETS / "hero_names" / f"{hero}{Path(url).suffix or '.svg'}"
+        if not dest.exists() and not dest.with_suffix(".png").exists():
+            jobs.append((url, dest))
+    todo = [(u, d) for u, d in jobs if (force and "hero_names" not in d.parts) or not d.exists()]
     if not todo:
         log.info("All %s icons already on disk", len(jobs))
         return

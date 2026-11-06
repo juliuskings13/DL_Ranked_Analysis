@@ -62,6 +62,7 @@ import os
 import re
 import sys
 import textwrap
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -165,7 +166,7 @@ def _normalize_names(raw: dict) -> dict:
     {heroes, abilities: hero -> [names], slots: hero -> {name.lower(): slot},
      ability_icons: hero -> {name.lower(): path}, items: name -> slot, item_icons: name -> path}."""
     out = {"heroes": raw.get("heroes", []), "abilities": {}, "slots": {}, "ability_icons": {}, "items": {},
-           "item_icons": {}}
+           "item_icons": {}, "hero_colors": dict(raw.get("hero_colors") or {})}
     for hero, lst in (raw.get("abilities") or {}).items():
         for a in lst:
             if isinstance(a, str):
@@ -206,7 +207,9 @@ def load_names(online: bool = True) -> dict:
             heroes, items = _get_json(HEROES_URL), _get_json(ITEMS_URL)
             by_class = {it.get("class_name"): it for it in items}
             raw = {"heroes": sorted(h["name"] for h in heroes if h.get("name") and h.get("player_selectable", True)),
-                   "abilities": {}, "items": {}}
+                   "abilities": {}, "items": {},
+                   "hero_colors": {h["name"]: (h.get("colors") or {}).get("style_hex", "").lower()
+                                   for h in heroes if h.get("name") and (h.get("colors") or {}).get("style_hex")}}
             for h in heroes:
                 for k in range(1, 5):
                     it = by_class.get((h.get("items") or {}).get(f"signature{k}"))
@@ -998,20 +1001,53 @@ def _wrap(text: str, size_px: float, width_px: float) -> list[str]:
     return lines + ([" ".join(cur)] if cur else [])
 
 
+# --- change-list cards: layout -----------------------------------------------------
+BIG_SCALE = 1.65            # the "1.25s -> 0.75s" line is this many times the line font, in the display font
+HEAD_BOOST_PX = 9           # ability / item headings: this much bigger (px) than before (~ +6.5pt)
+LABEL_GAP = 1.32            # line spacing of wrapped text (x font)
+ROW_GAP = 0.5               # space after each change (x font)
+
+
+def _head_px(f: float, head_scale: float) -> float:
+    return f * (0.92 if head_scale == 1 else 1.15) + HEAD_BOOST_PX
+
+
+def _icon_px(f: float, head_scale: float) -> int:
+    return int(round(_head_px(f, head_scale) * 1.65))
+
+
+def _group_h(f: float, head_scale: float) -> float:
+    return max(_icon_px(f, head_scale) + 10, _head_px(f, head_scale) * 1.6)
+
+
+def _row_lines(r: dict, f: float, width_px: float) -> list[str]:
+    """Wrapped text of one change: the short label for number lines, the whole sentence otherwise."""
+    text = r["label"] if r.get("big") else r["text"]
+    return _wrap(text, f, width_px - f * 1.6) if text else []
+
+
+def _row_h(r: dict, n_lines: int, f: float) -> float:
+    h = f * LABEL_GAP * n_lines + f * (ROW_GAP if not r.get("big") else ROW_GAP + 0.35)
+    if r.get("big"):
+        h += f * BIG_SCALE * 1.08
+    return h
+
+
+def _plan_h(plan, head_scale: float) -> float:
+    return sum(_group_h(f, head_scale) if k == "group" else _row_h(r, len(b), f) for k, b, r, f in plan)
+
+
 def _layout_list(groups: list[tuple[str, list[dict]]], width_px: float, height_px: float, min_font: float = 13,
                  max_font: float = 24, head_scale: float = 1.0):
     """Pick the largest font at which all groups fit; returns (font_px, line plan, fits)."""
     for font in np.arange(max_font, min_font - 0.01, -0.5):
-        plan, h = [], 0.0
+        plan = []
         for gname, rows in groups:
             if gname:
-                h += font * 1.55 * head_scale
                 plan.append(("group", gname, None, font))
             for r in rows:
-                lines = _wrap(r["text"], font, width_px - font * 1.6)
-                plan.append(("row", lines, r, font))
-                h += font * 1.32 * len(lines) + font * 0.45
-        if h <= height_px:
+                plan.append(("row", _row_lines(r, font, width_px), r, font))
+        if _plan_h(plan, head_scale) <= height_px:
             return font, plan, True
     return min_font, plan, False
 
@@ -1026,8 +1062,12 @@ def list_build_s(groups) -> float:
     return INTRO_S + ROW_SECONDS * sum(len(rows) for _, rows in groups)
 
 
-HERO_TITLE_PX = 63          # hero change cards: 50% bigger than the standard 42px title
-HERO_ICON_PX = 165          # and 50% bigger icon (standard 110)
+HERO_ICON_PX = 165          # hero change cards: big hero icon top right
+HERO_MAX_FONT = 32          # hero cards with few changes grow their text up to this instead of leaving space empty
+HERO_NAME_PX = 86           # height of the hero name logo (or the display-font name if there's no logo)
+LIST_TOP_PX = {"hero": 12 + HERO_ICON_PX + 18, "other": 136}
+LIST_BOTTOM_PX = (1 - T.FOOTER_LINE_Y) * T.CARD_PX - 20
+LIST_H_PX = {k: LIST_BOTTOM_PX - v for k, v in LIST_TOP_PX.items()}
 
 
 def _layout_columns(groups, col_w: float, height_px: float, ncols: int, min_font: float = 13,
@@ -1037,9 +1077,8 @@ def _layout_columns(groups, col_w: float, height_px: float, ncols: int, min_font
     for font in np.arange(max_font, min_font - 0.01, -0.5):
         blocks = []
         for g in groups:
-            _, plan, _ = _layout_list([g], col_w, 1e9, font, max_font=font)
-            gh = sum((font * 1.55 * head_scale) if k == "group" else (font * 1.32 * len(b) + font * 0.45) for k, b, _, _ in plan)
-            blocks.append((gh, plan))
+            _, plan, _ = _layout_list([g], col_w, 1e9, font, max_font=font, head_scale=head_scale)
+            blocks.append((_plan_h(plan, head_scale), plan))
         target = sum(h for h, _ in blocks) / ncols
         cols, heights = [[]], [0.0]
         for gh, plan in blocks:
@@ -1054,53 +1093,132 @@ def _layout_columns(groups, col_w: float, height_px: float, ncols: int, min_font
     return min_font, cols, False
 
 
+# --- change-list cards: drawing ----------------------------------------------------
+FROM_COLOR = "#d9d3c0"      # old value on the big number line
+ARROW_COLOR = "#a9a493"
+
+
+def _readable(color: str, min_lum: float = 0.62) -> str:
+    """A lighter version of color for text on the dark background."""
+    c = color
+    for _ in range(12):
+        r, g, b = (np.array(T.rgba(c)[:3]) / 255)
+        if 0.2126 * r + 0.7152 * g + 0.0722 * b >= min_lum:
+            break
+        c = T.blend(c, "#ffffff", 0.18)
+    return c
+
+
+def _call_color(final: str) -> str:
+    return VERDICT_STYLE.get(final, VERDICT_STYLE["change"])[1] if final in ("buff", "nerf") else T.GOLD
+
+
+def _draw_big_values(fig, x_px: float, y_px: float, r: dict, f: float, width_px: float, alpha: float) -> None:
+    """'1.25s -> 0.75s  -40%' in the display font: old value cream, new value and % in the call's color."""
+    big = f * BIG_SCALE
+    a_s, b_s, tag = r["a"], r["b"], (r.get("tag") or "").strip("()")
+    arrow = "→"
+    sp = big * 0.22
+    total = lambda s: (T.display_px(a_s, s) + T.text_px(arrow, s * 0.8) + T.display_px(b_s, s)  # noqa: E731
+                       + (T.display_px(tag, s * 0.72) + sp * 1.6 if tag else 0) + sp * 4)
+    if total(big) > width_px:
+        big = max(f * 1.05, big * width_px / total(big))
+    col = _call_color(r["final"])
+    base = 1 - (y_px + big * 0.98) / T.CARD_PX       # baseline
+    x = x_px
+    T.outlined_text(fig, x / T.CARD_PX, base, a_s, big, FROM_COLOR, alpha, display=True, va="baseline", ha="left")
+    x += T.display_px(a_s, big) + sp
+    T.outlined_text(fig, x / T.CARD_PX, base + big * 0.06 / T.CARD_PX, arrow, big * 0.8, ARROW_COLOR, alpha,
+                    va="baseline", ha="left", fontweight="bold")
+    x += T.text_px(arrow, big * 0.8) + sp
+    T.outlined_text(fig, x / T.CARD_PX, base, b_s, big, col, alpha, display=True, va="baseline", ha="left")
+    if tag:
+        x += T.display_px(b_s, big) + sp * 1.6
+        T.outlined_text(fig, x / T.CARD_PX, base, tag, big * 0.72, col, alpha * 0.95, display=True,
+                        va="baseline", ha="left")
+
+
+def _draw_hero_header(fig, name: str, page: str, sub: str, badge, color: str, ring: str | None, alpha: float) -> None:
+    size = HERO_ICON_PX
+    iax = fig.add_axes([1 - T.MARGIN_X - size / T.CARD_PX, 1 - 12 / T.CARD_PX - size / T.CARD_PX,
+                        size / T.CARD_PX, size / T.CARD_PX])
+    iax._no_fit = True
+    iax.imshow(T.icon_any(name, size, ring, alpha))
+    iax.axis("off")
+    x0 = T.MARGIN_X * T.CARD_PX
+    room = T.CARD_PX - 2 * x0 - size - 24 - (T.display_px(page, 40) + 14 if page else 0)
+    art = T.name_art(name, HERO_NAME_PX, int(room))
+    if art is not None:
+        a = art.copy()
+        a[..., 3] *= alpha
+        fig.figimage(a, xo=int(x0 - 10), yo=int(T.CARD_PX - 14 - a.shape[0] + 10), origin="upper", zorder=4)
+        name_right = x0 - 20 + a.shape[1]
+    else:                                     # no logo (e.g. a brand-new hero): the name in the display font
+        px = min(HERO_NAME_PX * 1.12, room / max(T.display_w_per_px(name.upper()), 1e-6))
+        T.outlined_text(fig, x0 / T.CARD_PX, 1 - (16 + HERO_NAME_PX * 0.92) / T.CARD_PX, name.upper(), px,
+                        T.TEXT, alpha, display=True, va="baseline", ha="left", width=4)
+        name_right = x0 + T.display_px(name.upper(), px)
+    if page:
+        T.outlined_text(fig, (name_right + 14) / T.CARD_PX, 1 - (16 + HERO_NAME_PX * 0.92) / T.CARD_PX, page, 40,
+                        T.TEXT_MUTED, alpha, display=True, va="baseline", ha="left")
+    y = 14 + HERO_NAME_PX + 20 + 22                   # center of the stamp row
+    x = x0
+    if badge:
+        label, bcol = badge
+        spx = 34
+        fig.text((x + 10) / T.CARD_PX, 1 - y / T.CARD_PX, label, color="#0b1011", alpha=alpha, va="center",
+                 ha="left", fontproperties=_dprop(spx), zorder=5,
+                 bbox=dict(boxstyle="round,pad=0.32,rounding_size=0.25", fc=bcol, ec="#05090a", lw=2, alpha=alpha))
+        x += T.display_px(label, spx) + 46
+    room = T.CARD_PX - x0 - size - 20 - x
+    spx = T.fit_font_px([sub], room, max_px=23, min_px=14, bold=False)
+    T.outlined_text(fig, x / T.CARD_PX, 1 - y / T.CARD_PX, sub, spx, T.TEXT, alpha, va="center", ha="left")
+
+
+def _dprop(px: float):
+    p = T.display_prop().copy()
+    p.set_size(T.px_to_pt(px))
+    return p
+
+
+def _draw_plain_header(fig, title: str, sub: str, accent: str | None, alpha: float) -> None:
+    x0 = T.MARGIN_X * T.CARD_PX
+    tpx = min(62, (T.CARD_PX - 2 * x0) / max(T.display_w_per_px(title), 1e-6))
+    T.outlined_text(fig, x0 / T.CARD_PX, 1 - 76 / T.CARD_PX, title, tpx, _readable(accent) if accent else T.GOLD,
+                    alpha, display=True, va="baseline", ha="left", width=4)
+    spx = T.fit_font_px([sub], T.CARD_PX - 2 * x0, max_px=23, min_px=14, bold=False)
+    T.outlined_text(fig, x0 / T.CARD_PX, 1 - 108 / T.CARD_PX, sub, spx, T.TEXT_MUTED, alpha, va="center", ha="left")
+
+
 def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta: dict, progress: float = 1.0,
                 highlight: set[str] | None = None, icon: str | None = None, ring: str | None = None,
                 badge: tuple[str, str] | None = None, group_icons: dict | None = None,
                 group_tags: dict | None = None,
                 ncols: int = 1, head_scale: float = 1.0, accent: str | None = None,
-                min_font: float | None = None, max_font: float = 24) -> "T.Figure":
-    """A card listing changes: optional group headings (abilities, items), each line with a colored marker.
-    With icon= (hero cards) the title and icon are drawn large. head_scale > 1 draws bigger group headings
-    and icons (item cards); accent colors the title and group headings (item slot colors); min_font is the
-    smallest allowed line font."""
+                min_font: float | None = None, max_font: float = 24, bg: str | None = None,
+                page: str = "") -> "T.Figure":
+    """A card listing changes over a textured background in bg's color. Group headings (abilities, items)
+    in the display font with their icons; each change with numbers shows a short label and a big
+    "old -> new  %" line, other changes as a sentence. icon= makes it a hero card (name logo, big icon,
+    BUFFED/NERFED stamp); otherwise title is drawn in the display font. head_scale > 1: bigger headings
+    (item cards); accent colors the title and headings; min_font is the smallest allowed line font."""
     total_s = list_build_s(groups)
     p_frame = T.ease_out_cubic(T.phase(progress, 0, INTRO_S / total_s))
     head, slot = INTRO_S / total_s, ROW_SECONDS / total_s       # progress units: intro, then one slot per line
     row_t = lambda k: T.ease_out_cubic(T.phase(progress, head + k * slot,  # noqa: E731
                                                head + k * slot + slot * ROW_FADE_S / ROW_SECONDS))
     fig = _blank_card()
+    T.draw_textured_bg(fig, bg or "#6b5a32", seed=zlib.crc32((icon or title).encode()) % 10_000)
     T.draw_footer(fig, _meta(meta), alpha=p_frame)
     if icon:
-        size = HERO_ICON_PX
-        iax = fig.add_axes([1 - T.MARGIN_X - size / T.CARD_PX, 1 - 12 / T.CARD_PX - size / T.CARD_PX,
-                            size / T.CARD_PX, size / T.CARD_PX])
-        iax._no_fit = True
-        iax.imshow(T.icon_any(icon, size, ring, p_frame))
-        iax.axis("off")
-        room = T.CARD_PX * (1 - 2 * T.MARGIN_X) - size - 24
-        tpx = T.fit_font_px([title], room, max_px=HERO_TITLE_PX, min_px=34)
-        t = fig.text(T.MARGIN_X, 1 - 52 / T.CARD_PX, title, color=T.GOLD, fontsize=T.px_to_pt(tpx),
-                     fontweight="bold", va="center", ha="left", alpha=p_frame)
-        st = fig.text(T.MARGIN_X, 1 - 106 / T.CARD_PX, sub, color=T.TEXT_MUTED, fontsize=T.px_to_pt(T.SIZE_SUBTITLE),
-                      va="center", ha="left", alpha=p_frame)
-        T._mark_header_bottom(fig, t)
-        T._mark_header_bottom(fig, st)
+        _draw_hero_header(fig, icon, page, sub, badge, bg or T.GOLD, ring, p_frame)
+        top_px = LIST_TOP_PX["hero"]
+        head_color = _readable(accent or bg or T.GOLD, 0.55)
     else:
-        T.draw_header(fig, title, sub, alpha=p_frame)
-        if accent:
-            for t in fig.texts:
-                if t.get_text() == title:
-                    t.set_color(accent)
-    top_px = (1 - getattr(fig, "_content_top", 0.88) + 0.03) * T.CARD_PX
-    if badge:
-        label, color = badge
-        fig.text(T.MARGIN_X, 1 - top_px / T.CARD_PX, label, color=color, fontsize=T.px_to_pt(30), fontweight="bold",
-                 va="top", ha="left", alpha=p_frame)
-        top_px += 52
-    if icon:
-        top_px = max(top_px, 12 + HERO_ICON_PX + 14)      # list starts below the big icon
-    bottom_px = (1 - T.FOOTER_LINE_Y) * T.CARD_PX - 20
+        _draw_plain_header(fig, title + (f" {page}" if page else ""), sub, accent, p_frame)
+        top_px = LIST_TOP_PX["other"]
+        head_color = _readable(accent, 0.5) if accent else T.GOLD
+    bottom_px = LIST_BOTTOM_PX
     x0_px = T.MARGIN_X * T.CARD_PX
     width_px = T.CARD_PX - 2 * x0_px
     if os.environ.get("PATCH_DEBUG"):
@@ -1114,39 +1232,36 @@ def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta
         width_px = col_w
     else:
         font, plan, fits = _layout_list(groups, width_px, bottom_px - top_px, (min_font or MIN_LIST_FONT) - 2,
-                                        head_scale=head_scale)
+                                        head_scale=head_scale, max_font=max_font)
         starts = [(x0_px, plan)]
-    n_rows = sum(1 for _, cp in starts for p in cp if p[0] == "row")
     k = 0
     for x0_px, plan in starts:
         y = top_px
         for kind, body, r, f in plan:
             if kind == "group":
-                gh = f * 1.55 * head_scale                    # heading band height
+                gh = _group_h(f, head_scale)
                 gx = x0_px
-                isz = int(f * 1.35 * head_scale)
+                isz = _icon_px(f, head_scale)
                 gi = _img((group_icons or {}).get(body), isz, row_t(k))
                 if gi is not None:
-                    fig.figimage(gi, xo=int(gx), yo=int(T.CARD_PX - y - (gh + isz) / 2 + f * 0.1),
-                                 origin="upper", zorder=3)
-                    gx += isz + f * 0.35
-                hpx = f * (0.92 if head_scale == 1 else 1.15)
+                    fig.figimage(gi, xo=int(gx), yo=int(T.CARD_PX - y - (gh + isz) / 2), origin="upper", zorder=3)
+                    gx += isz + f * 0.45
+                hpx = _head_px(f, head_scale)
                 tags = (group_tags or {}).get(body) or []
                 tag_w = 0.0
-                if tags:                                       # e.g. "▲ avg 88%" right-aligned on the heading
-                    tpx = f * 0.8
+                if tags:                                       # e.g. "▲ 88%" right-aligned on the heading
+                    tpx = f * 0.85
                     tx = x0_px + width_px - 2
                     for txt, tcol in reversed(tags):
-                        fig.text(tx / T.CARD_PX, 1 - (y + gh / 2 - f * 0.1) / T.CARD_PX, txt, color=tcol,
-                                 fontsize=T.px_to_pt(tpx), fontweight="bold", va="center", ha="right",
-                                 alpha=row_t(k))
-                        tx -= (len(txt) * 0.62 + 0.6) * tpx
+                        T.outlined_text(fig, tx / T.CARD_PX, 1 - (y + gh / 2) / T.CARD_PX, txt, tpx, tcol, row_t(k),
+                                        va="center", ha="right", fontweight="bold")
+                        tx -= T.text_px(txt, tpx) + tpx * 0.6
                     tag_w = x0_px + width_px - tx
-                hpx = min(hpx, T.fit_font_px([body.upper()], width_px - (gx - x0_px) - 4 - tag_w, max_px=hpx,
-                                             min_px=10))
-                fig.text(gx / T.CARD_PX, 1 - (y + gh / 2 - f * 0.1) / T.CARD_PX, body.upper(), color=accent or T.GOLD,
-                         fontsize=T.px_to_pt(hpx), fontweight="bold",
-                         va="center", ha="left", alpha=row_t(k))
+                label = body.upper()
+                room = width_px - (gx - x0_px) - 6 - tag_w
+                hpx = min(hpx, room / max(T.display_w_per_px(label), 1e-6))
+                T.outlined_text(fig, gx / T.CARD_PX, 1 - (y + gh / 2 + hpx * 0.36) / T.CARD_PX, label, hpx,
+                                head_color, row_t(k), display=True, va="baseline", ha="left")
                 y += gh
                 continue
             t = row_t(k)                 # one line at a time, each held before the next appears
@@ -1154,25 +1269,97 @@ def render_list(title: str, sub: str, groups: list[tuple[str, list[dict]]], meta
             hl = highlight is None or (r.get("key") or "").lower() in highlight
             a = t * (1.0 if hl else 0.3)
             glyph, color, _ = VERDICT_STYLE.get(r["final"], VERDICT_STYLE["change"])
-            fig.text((x0_px + f * 0.15) / T.CARD_PX, 1 - y / T.CARD_PX, glyph, color=color,
-                     fontsize=T.px_to_pt(f * 0.95), va="top", ha="left", alpha=a, fontweight="bold")
-            for j, line in enumerate(body):
-                fig.text((x0_px + f * 1.6) / T.CARD_PX, 1 - (y + j * f * 1.32) / T.CARD_PX, line,
-                         color=T.TEXT if r["final"] not in ("fix",) else T.TEXT_MUTED,
-                         fontsize=T.px_to_pt(f), va="top", ha="left", alpha=a)
-            y += f * 1.32 * len(body) + f * 0.45
+            T.outlined_text(fig, (x0_px + f * 0.15) / T.CARD_PX, 1 - (y + f * 0.05) / T.CARD_PX, glyph, f * 0.95,
+                            color, a, va="top", ha="left", fontweight="bold")
+            tx0 = x0_px + f * 1.6
+            txt_color = T.TEXT if r["final"] != "fix" else T.TEXT_MUTED
+            if r.get("big"):
+                for j, line in enumerate(body):
+                    T.outlined_text(fig, tx0 / T.CARD_PX, 1 - (y + j * f * LABEL_GAP) / T.CARD_PX, line, f,
+                                    txt_color, a, va="top", ha="left")
+                _draw_big_values(fig, tx0, y + f * LABEL_GAP * len(body) + f * 0.05, r, f,
+                                 width_px - f * 1.6, a)
+            else:
+                tag = r.get("tag") or ""
+                for j, line in enumerate(body):
+                    ly = 1 - (y + j * f * LABEL_GAP) / T.CARD_PX
+                    has_tag = bool(tag) and j == len(body) - 1 and line.endswith(tag)
+                    main = line[: -len(tag)].rstrip() if has_tag else line
+                    art = T.outlined_text(fig, tx0 / T.CARD_PX, ly, main, f, txt_color, a, va="top", ha="left")
+                    if has_tag:              # right after the rendered text, colored like the line's call
+                        tx = tx0 / T.CARD_PX + (T.text_width_frac(fig, art) if main else 0) + f * 0.3 / T.CARD_PX
+                        T.outlined_text(fig, tx, ly, tag, f, _call_color(r["final"]), a, va="top", ha="left",
+                                        fontweight="bold")
+            y += _row_h(r, len(body), f)
     if not fits:
         fig.text(0.5, T.FOOTER_LINE_Y + 0.01, "(more on the next card)", color=T.TEXT_MUTED, ha="center",
                  va="bottom", fontsize=T.px_to_pt(12), alpha=p_frame)
     return fig
 
 
+def value_change_tag(r) -> str:
+    """"(-16.7%)" for a line with numbers (30% -> 25%): the change relative to the old value. "" without numbers,
+    from 0, or when the line already says "by N%"."""
+    a, b = pd.to_numeric(r.get("from"), errors="coerce"), pd.to_numeric(r.get("to"), errors="coerce")
+    if pd.isna(a) or pd.isna(b) or a == b or a == 0:
+        return ""
+    if a < 0 and b <= 0:          # "-32% slow -> -28%": the slow got 12.5% smaller, so -12.5%, not +12.5%
+        a, b = -a, -b
+    pct = (b - a) / abs(a) * 100
+    txt = f"{pct:+.1f}".rstrip("0").rstrip(".")
+    return f"({txt}%)"
+
+
+VALUE_TOKEN = re.compile(r"^([+-]?\d+(?:\.\d+)?(?:%|s|m|x|°)?)(?:\s+(.*))?$")
+FROM_TO = re.compile(r"^(?P<label>.*?)\s*\b(?:" + UP_WORDS + "|" + DOWN_WORDS + r"|changed|adjusted)\s+from\s+"
+                     r"(?P<a>\S.*?)\s+to\s+(?P<b>[^(,;]+?)\s*(?P<rest>[(,;].*)?\.?$", re.I)
+
+
+def split_values(text: str) -> tuple[str, str, str] | None:
+    """"T3 silence duration increased from 1.25s to 1.75s" -> ("T3 silence duration", "1.25s", "1.75s").
+    A unit word after the old value goes into the label ("10% Max HP to 14%" -> "... (Max HP)"); a trailing
+    note in brackets too. None when the line doesn't have that shape (it is then shown as a sentence)."""
+    m = FROM_TO.match(text.strip())
+    if not m:
+        return None
+    ma, mb = VALUE_TOKEN.match(m["a"].strip()), VALUE_TOKEN.match(m["b"].strip())
+    if not ma or not mb:
+        return None
+    a_s, a_extra = ma[1], (ma[2] or "").strip()
+    b_s, b_extra = mb[1], (mb[2] or "").strip()
+    if b_extra and b_extra != a_extra:          # "275 to 170 + 3/Boon": the new value has its own extra part
+        return None
+    if len(a_extra.split()) > 3 or a_extra.startswith("("):   # "3000 (+50/min) to 1500 (+25/min)": keep the sentence
+        return None
+    if a_s[-1] in "%smx°" and b_s[-1].isdigit():  # "10% to 14" style: carry the unit over
+        b_s += a_s[-1]
+    label = m["label"].strip().rstrip(":") or "Value"
+    label = label[0].upper() + label[1:]
+    if a_extra:
+        label += f" ({a_extra})"
+    rest = (m["rest"] or "").strip().rstrip(".")
+    if re.search(r"\bfrom\b.*\bto\b", rest):      # a second change in the same line: keep the sentence
+        return None
+    if rest:
+        label += (" " + rest) if rest.startswith("(") else (" — " + rest.lstrip(",; "))
+    return label, a_s, b_s
+
+
 def _row(r) -> dict:
-    return {"text": r["change"][0].upper() + r["change"][1:], "final": r["final"], "key": r["ability"]}
+    text = r["change"][0].upper() + r["change"][1:]
+    tag = value_change_tag(r) if SHOW_PCT else ""
+    row = {"text": f"{text} {tag}" if tag else text, "tag": tag, "final": r["final"], "key": r["ability"]}
+    sv = split_values(r["change"]) if BIG_NUMBERS else None
+    if sv:
+        row.update(big=True, label=sv[0], a=sv[1], b=sv[2])
+    return row
+
+
+SHOW_PCT = True             # hero and item lines end with the % change of the value, colored like the line's call
+BIG_NUMBERS = True          # lines with "from X to Y": short label + big "X -> Y" (False = the old one-sentence lines)
 
 
 LIST_W_PX = T.CARD_PX * (1 - 2 * T.MARGIN_X)
-LIST_H_PX = {"hero": 785, "other": 840}     # room for the list under the header (hero cards: big icon + badge)
 MIN_LIST_FONT = 18                         # below this a card splits into pages instead of shrinking further
 
 
@@ -1296,11 +1483,13 @@ def cards(data_dir: Path, **_) -> dict:
                + (" · reworked" if h["rework"] else ""))
         for p, groups in enumerate(pages, 1):
             key = f"patch_hero_{slug(name)}" + (f"_{p}" if len(pages) > 1 else "")
+            hcol = names.get("hero_colors", {}).get(name) or T.archetype_color(types.get(name, ""))
             out[key] = (lambda progress=1.0, highlight=None, g=groups, n=name, s=sub, c=color, call=h["call"], pg=p,
-                        total=len(pages), gi=ab_icons:
-                        render_list(n.upper() + (f" ({pg}/{total})" if total > 1 else ""), s, g, meta,
+                        total=len(pages), gi=ab_icons, hc=hcol:
+                        render_list(n.upper(), s, g, meta,
                                     progress, highlight, icon=n, ring=T.archetype_color(types.get(n, "")),
-                                    badge=(call, c), group_icons=gi))
+                                    badge=(call, c), group_icons=gi, bg=hc, max_font=HERO_MAX_FONT,
+                                    page=f"{pg}/{total}" if total > 1 else ""))
     item_tags = {}
     for _, it in items.iterrows():
         tags = []
@@ -1329,21 +1518,28 @@ def cards(data_dir: Path, **_) -> dict:
                 key = f"patch_items_{slot or 'other'}" + (f"_{p}" if len(pages) > 1 else "")
                 out[key] = (lambda progress=1.0, highlight=None, g=g, p=p, total=len(pages), label=label,
                             sub=f"{len(sub_items)} items · {nb} mostly buffed · {nn} mostly nerfed":
-                            render_list(f"{label} ITEMS" + (f" ({p}/{total})" if total > 1 else ""), sub, g, meta,
+                            render_list(f"{label} ITEMS", sub, g, meta,
                                         progress, highlight, group_icons=item_icons, ncols=2,
+                                        bg=SLOT_COLORS.get(label.lower()), page=f"({p}/{total})" if total > 1 else "",
                                         head_scale=ITEM_HEAD_SCALE, accent=SLOT_ACCENT.get(label.lower()),
                                         group_tags=item_tags,
                                         min_font=ITEM_MIN_FONT, max_font=ITEM_MAX_FONT))
     gen = df[df["kind"] == "general"]
     if len(gen):
-        rows = [{"text": r["change"], "final": r["final"] if r["final"] in ("fix",) else "system", "key": ""}
-                for _, r in gen.iterrows()]
+        rows = []
+        for _, r in gen.iterrows():
+            row = {"text": r["change"], "final": r["final"] if r["final"] in ("fix",) else "system", "key": "",
+                   "tag": value_change_tag(r) if SHOW_PCT else ""}
+            sv = split_values(r["change"]) if BIG_NUMBERS else None
+            if sv:
+                row.update(big=True, label=sv[0], a=sv[1], b=sv[2], final=r["final"] if r["final"] in ("buff", "nerf") else "change")
+            rows.append(row)
         gpages = _paginate([("", rows)], LIST_H_PX["other"])
         for p, g in enumerate(gpages, 1):
             out[f"patch_general_{p}"] = (lambda progress=1.0, highlight=None, g=g, p=p, total=len(gpages):
-                                         render_list("GENERAL CHANGES" + (f" ({p}/{total})" if total > 1 else ""),
-                                                     "map, economy and system changes", g, meta,
-                                                     progress, highlight))
+                                         render_list("GENERAL CHANGES", "map, economy and system changes", g,
+                                                     meta, progress, highlight,
+                                                     page=f"({p}/{total})" if total > 1 else ""))
     for name, draw in out.items():          # text cards reveal line by line: give animate.py their pace
         groups = getattr(draw, "__defaults__", None) and next(
             (d for d in draw.__defaults__ if isinstance(d, list) and d and isinstance(d[0], tuple)), None)

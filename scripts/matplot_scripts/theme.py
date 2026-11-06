@@ -609,3 +609,152 @@ def phase(progress: float, start: float, end: float) -> float:
 def ease_out_cubic(t: float) -> float:
     t = clamp01(t)
     return 1 - (1 - t) ** 3
+
+
+# =============================================================================
+# DISPLAY TYPE, TEXT OUTLINES, TEXTURED BACKGROUNDS, HERO NAME ART  (patch cards)
+# =============================================================================
+DISPLAY_FONT = Path(os.environ.get("DL_DISPLAY_FONT", "/usr/local/share/fonts/a/Anton_Regular.ttf"))
+NAME_ART_DIR = ASSETS_BASE / "hero_names"       # "Mo & Krill.svg", "Deadman Danny.svg", ... (or .png)
+
+
+@lru_cache(maxsize=1)
+def display_prop():
+    """FontProperties for big display text (Anton). Falls back to a bold condensed sans if the file
+    is missing, so cards still render (just without the Anton look)."""
+    from matplotlib import font_manager
+    from matplotlib.font_manager import FontProperties
+    if DISPLAY_FONT.exists():
+        font_manager.fontManager.addfont(str(DISPLAY_FONT))
+        return FontProperties(fname=str(DISPLAY_FONT))
+    print(f"  (display font not found at {DISPLAY_FONT}; set DL_DISPLAY_FONT. Using DejaVu Sans Condensed)")
+    return FontProperties(family="DejaVu Sans", stretch="condensed", weight="bold")
+
+
+@lru_cache(maxsize=100_000)
+def display_w_per_px(s: str) -> float:
+    """Rendered width of s in the display font, in pixels per 1px of font size."""
+    from matplotlib.textpath import TextPath
+    return TextPath((0, 0), s, size=100, prop=display_prop()).get_extents().width / 100.0 * 1.04
+
+
+def display_px(s: str, size_px: float) -> float:
+    return display_w_per_px(str(s)) * size_px
+
+
+def outlined(alpha: float = 1.0, width: float = 3.0, shadow: bool = True) -> list:
+    """Path effects for text over a textured background: soft drop shadow + dark outline."""
+    fx = []
+    if shadow:
+        fx.append(pe.SimplePatchShadow(offset=(1.6, -1.6), shadow_rgbFace="#000000", alpha=0.55 * alpha))
+    fx += [pe.Stroke(linewidth=width, foreground="#05090a", alpha=0.85 * alpha), pe.Normal()]
+    return fx
+
+
+def outlined_text(fig: Figure, x: float, y: float, s: str, size_px: float, color: str, alpha: float = 1.0,
+                  display: bool = False, width: float | None = None, **kw):
+    """fig.text with outline + shadow; display=True uses the display font (Anton)."""
+    if display:
+        kw["fontproperties"] = display_prop().copy()
+        kw["fontproperties"].set_size(px_to_pt(size_px))
+    else:
+        kw.setdefault("fontsize", px_to_pt(size_px))
+    w = width if width is not None else max(2.0, size_px * 0.12)
+    return fig.text(x, y, s, color=color, alpha=alpha, path_effects=outlined(alpha, w), **kw)
+
+
+@lru_cache(maxsize=64)
+def textured_bg(color: str, seed: int = 7, strength: float = 0.42) -> np.ndarray:
+    """1080x1080 RGB float array: dark base -> color gradient (glow from the top right), a vignette and
+    fixed film grain (same seed every frame, so animations don't flicker)."""
+    n = CARD_PX
+    yy, xx = np.mgrid[0:n, 0:n] / (n - 1)
+    base = np.array(rgba(blend(BG, "#000000", 0.35))[:3], float) / 255
+    col = np.array(rgba(blend(color, "#000000", 0.25))[:3], float) / 255
+    diag = np.clip(0.55 * xx + 0.45 * (1 - yy), 0, 1) ** 1.6                    # toward the top right
+    glow = np.exp(-(((xx - 0.86) ** 2) + ((yy - 0.12) ** 2)) / 0.09)          # behind the hero icon
+    t = np.clip(strength * (0.75 * diag + 0.55 * glow), 0, 0.75)[..., None]
+    img = base + (col - base) * t
+    vign = 1 - 0.35 * (((xx - 0.5) ** 2 + (yy - 0.5) ** 2) / 0.5) ** 1.3
+    img *= vign[..., None]
+    rng = np.random.default_rng(seed)
+    grain = rng.normal(0, 0.028, (n, n))
+    try:                                         # slightly clumped grain reads more like paper/film
+        from PIL import ImageFilter
+        g = Image.fromarray(((grain / 0.12 + 0.5).clip(0, 1) * 255).astype(np.uint8))
+        grain = (np.asarray(g.filter(ImageFilter.GaussianBlur(0.6)), float) / 255 - 0.5) * 0.12 + grain * 0.5
+    except Exception:
+        pass
+    img = img + grain[..., None]
+    return np.clip(img, 0, 1)
+
+
+def draw_textured_bg(fig: Figure, color: str, seed: int = 7) -> None:
+    fig.figimage(textured_bg(color, seed), xo=0, yo=0, origin="upper", zorder=-100)
+
+
+def _rasterize_svg(path: Path, height_px: int) -> Image.Image | None:
+    """SVG -> RGBA at the given height. Uses cairosvg (pip install cairosvg), else rsvg-convert/inkscape."""
+    import io
+    import shutil
+    import subprocess
+    try:
+        import cairosvg
+        png = cairosvg.svg2png(url=str(path), output_height=height_px * 2)
+        return Image.open(io.BytesIO(png)).convert("RGBA")
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"  (cairosvg failed on {path.name}: {e})")
+    for cmd in (["rsvg-convert", "-h", str(height_px * 2), str(path)],
+                ["inkscape", str(path), "--export-type=png", f"--export-height={height_px * 2}",
+                 "--export-filename=-"]):
+        if shutil.which(cmd[0]):
+            try:
+                out = subprocess.run(cmd, capture_output=True, check=True, timeout=30).stdout
+                return Image.open(io.BytesIO(out)).convert("RGBA")
+            except Exception:
+                continue
+    return None
+
+
+_warned_svg = []
+
+
+@lru_cache(maxsize=256)
+def name_art(name: str, height_px: int, max_w_px: int) -> np.ndarray | None:
+    """The hero's name logo (assets/hero_names/<Name>.svg or .png) as RGBA float array with a dark outline
+    and drop shadow baked in, scaled to height_px (narrower if it would exceed max_w_px). None if missing."""
+    from PIL import ImageFilter
+    src = None
+    for ext in (".png", ".svg"):
+        p = NAME_ART_DIR / f"{name}{ext}"
+        if p.exists():
+            src = p
+            break
+    if src is None:
+        return None
+    im = _rasterize_svg(src, height_px) if src.suffix == ".svg" else Image.open(src).convert("RGBA")
+    if im is None:
+        if not _warned_svg:
+            print("  (can't rasterize hero name SVGs: pip install cairosvg  -- using the display font instead)")
+            _warned_svg.append(1)
+        return None
+    bbox = im.getchannel("A").getbbox()
+    if bbox:
+        im = im.crop(bbox)
+    scale = min(height_px / im.height, max_w_px / im.width)
+    im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.LANCZOS)
+    pad = 10
+    canvas = Image.new("RGBA", (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+    a = Image.new("L", canvas.size, 0)
+    a.paste(im.getchannel("A"), (pad, pad))
+    outline = a.filter(ImageFilter.MaxFilter(5))
+    shadow = Image.new("L", canvas.size, 0)
+    shadow.paste(a, (3, 4))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(4)).point(lambda v: int(v * 0.7))
+    dark = Image.new("RGBA", canvas.size, (5, 9, 10, 0))
+    dark.putalpha(Image.fromarray(np.maximum(np.asarray(outline), np.asarray(shadow)).astype(np.uint8)))
+    canvas = Image.alpha_composite(canvas, dark)
+    canvas.alpha_composite(im, (pad, pad))
+    return np.asarray(canvas).astype(np.float32) / 255

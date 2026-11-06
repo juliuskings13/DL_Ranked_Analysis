@@ -3,16 +3,15 @@
 hook*                        | Intro
 season_numbers               | Season 1 in numbers
 season_rank_distribution     | Where everyone ended up
-season_placement_outcomes    | What happened after placements
-season_underplaced           | Were players placed too low?
-season_rank_over_time        | How the ladder moved
+season_rank_over_time        | Where everyone ended up
+season_placement_outcomes    | Were placements fair?
+season_underplaced           | Were placements fair?
 season_climb_by_winrate      | Do losing players climb?
-season_climb_by_games        | Does playing more make you climb?
-season_points_kept           | Points won, lost and kept
-season_shields               | What shields actually did
-season_below_peak            | Finished below their best
-season_sim_vs_real           | The simulation vs reality
-season_games_per_rank        | How many games to climb?
-season_missing_matches       | How many matches are missing?
-season_missing_skew          | Are players better than their stats?
+season_climb_by_games        | Do losing players climb?
+season_points_kept           | Why they climb: shields
+season_shields               | Why they climb: shields
+season_sim_vs_real           | My simulation vs reality
+season_games_per_rank        | My simulation vs reality
+season_missing_matches       | What tracker sites don't show you
+season_missing_skew          | What tracker sites don't show you
 closer*                      | Final thoughts

@@ -69,7 +69,8 @@ WR_WINDOWS = [(f"{w}%", w, w - 1, w + 1) for w in (45, 48, 50, 52, 55, 60)]
 WR_COLORS = ["#ef6363", "#f0a35e", "#ffd073", "#9bd17f", "#41d67e", "#4dabf7"]
 GAME_EDGES = [30, 50, 75, 100, 125, 150, 175, 200, 225, 250, 100_000]
 GAME_LABELS = ["30–49", "50–74", "75–99", "100–124", "125–149", "150–174", "175–199", "200–224", "225–249", "250+"]
-CLIMB_LABELS = ["fell", "same rank", "+1 rank", "+2 ranks", "+3 or more"]
+CLIMB_EDGES = [-np.inf, 0, 7000, 14000, 21000, np.inf]          # rank points gained since placement
+CLIMB_LABELS = ["lost points", "+0–7k", "+7k–14k", "+14k–21k", "+21k or more"]
 CLIMB_COLORS = [T.RED, "#8a8f98", "#9bd17f", "#41d67e", "#4dabf7"]
 RANK_GROUPS = [("Low (Initiate–Acolyte)", (1, 2, 3), "#4dabf7"), ("Mid (Sentinel–Emissary)", (4, 5, 6, 7), "#ffd43b"),
                ("High (Oracle+)", (8, 9, 10, 11), "#da77f2")]
@@ -310,10 +311,10 @@ def outcomes_by_wr(p: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for label, w, lo, hi in WR_WINDOWS:
         g = in_window(q, lo, hi)
-        delta = (g["end_rank"] - g["placed_rank"]).to_numpy()
+        pts = (g["climb"] * RANK_PTS).to_numpy()
         n = max(len(g), 1)
-        shares = [(delta < 0).sum(), (delta == 0).sum(), (delta == 1).sum(), (delta == 2).sum(), (delta >= 3).sum()]
-        rows.append({"window": label, "n": len(g), **{k: 100 * v / n for k, v in zip(CLIMB_LABELS, shares)}})
+        counts = np.histogram(pts, CLIMB_EDGES)[0]
+        rows.append({"window": label, "n": len(g), **{k: 100 * v / n for k, v in zip(CLIMB_LABELS, counts)}})
     return pd.DataFrame(rows)
 
 
@@ -574,9 +575,9 @@ def render_underplaced(d: dict, progress: float = 1.0, highlight=None):
     t = underplaced(d["players"])
     p_frame, p_bars, p_lab = _phases(progress)
     fig, ax = _card(d, "WERE PLAYERS PLACED TOO LOW?",
-                    "share of each placement rank winning 55%+ afterwards, and how far those players climbed",
-                    f"players with {MIN_GAMES}+ recorded games after placing  ·  label = median ranks climbed by "
-                    "the 55%+ players  ·  win rate from recorded matches", p_frame, MIN_GAMES)
+                    "share of each placement rank winning 55%+ afterwards, and the rank points they gained",
+                    f"players with {MIN_GAMES}+ recorded games after placing  ·  label = median rank points the 55%+ "
+                    "players gained (7,000 = one rank)", p_frame, MIN_GAMES)
     x = np.arange(len(t))
     v = t["share55"].to_numpy(float)
     ax.bar(x, v * p_bars, 0.66, color=T.GREEN, zorder=3)
@@ -585,7 +586,7 @@ def render_underplaced(d: dict, progress: float = 1.0, highlight=None):
             ax.text(xi, vi * p_bars + max(v) * 0.02, f"{vi:.0f}%", ha="center", va="bottom", color=T.TEXT,
                     fontsize=T.px_to_pt(17), fontweight="bold", alpha=p_lab)
             if not np.isnan(c) and vi > max(v) * 0.18:
-                ax.text(xi, vi * p_bars / 2, f"+{c:.1f}\nranks", ha="center", va="center", color=T.BG,
+                ax.text(xi, vi * p_bars / 2, f"+{c * RANK_PTS / 1000:.1f}k\npts", ha="center", va="center", color=T.BG,
                         fontsize=T.px_to_pt(14), fontweight="bold", alpha=p_lab, linespacing=0.95)
     ax.set_xticks(x, [f"{RANK_TIER_NAMES[int(r)]}\n{int(n):,}" for r, n in zip(t["rank"], t["n"])], rotation=0)
     ax.yaxis.set_major_formatter(lambda v_, _: f"{v_:.0f}%")
@@ -645,8 +646,8 @@ def render_climb_by_wr(d: dict, progress: float = 1.0, highlight=None):
     neg = neg[neg["wr"] < 50]
     neg_up = 100 * (neg["climb"] > 0).mean() if len(neg) else np.nan
     fig, ax = _card(d, "DO LOSING PLAYERS CLIMB?",
-                    f"{neg_up:.0f}% of players under 50% still ended above their placement",
-                    "rank now vs rank placed (Initiate → Seeker = +1 rank)  ·  win rate ±1%, from recorded matches",
+                    f"{neg_up:.0f}% of players under 50% still gained rank points after placements",
+                    "rank points gained since placement (7,000 = one rank)  ·  win rate ±1%, from recorded matches",
                     p_frame, MIN_GAMES)
     x = np.arange(len(t))
     bottom = np.zeros(len(t))
@@ -673,13 +674,13 @@ def render_climb_by_games(d: dict, progress: float = 1.0, highlight=None):
     t = climb_by_games(d["players"])
     p_frame, p_lines, _ = _phases(progress)
     fig, ax = _card(d, "DOES PLAYING MORE MAKE YOU CLIMB?",
-                    "median ranks climbed since placement, by games played, for each win rate",
+                    "median rank points gained since placement, by games played, for each win rate",
                     f"win rate ±1%, games and win rate from recorded matches  ·  hollow = under {MIN_POINT_N} players",
                     p_frame, MIN_GAMES)
     x = np.arange(len(GAME_LABELS))
     for (label, *_), color in zip(WR_WINDOWS, WR_COLORS):
         g = t[t["window"] == label].set_index("bin").reindex(GAME_LABELS)
-        y = g["median"].to_numpy(float)
+        y = g["median"].to_numpy(float) * RANK_PTS
         upto = int(np.floor(p_lines * (len(x) - 1))) + 1
         ax.plot(x[:upto], y[:upto], color=color, lw=3, zorder=3, solid_capstyle="round")
         for xi, yi, n in zip(x[:upto], y[:upto], g["n"].to_numpy()[:upto]):
@@ -690,12 +691,13 @@ def render_climb_by_games(d: dict, progress: float = 1.0, highlight=None):
         if len(ok) and p_lines > 0.95:
             ax.text(ok[-1] + 0.2, y[ok[-1]], label, color=color, fontsize=T.px_to_pt(18), fontweight="bold",
                     va="center", ha="left", path_effects=T.STROKE)
-    ax.axhline(0, color=T.DIVIDER, lw=1.2, zorder=2)
+    lo_y = np.nanmin(t["median"].to_numpy(float)) * RANK_PTS
+    ax.set_ylim(bottom=0 if lo_y >= 0 else lo_y * 1.15)
     ax.set_xlim(-0.4, len(x) - 1 + 1.1)
     ax.set_xticks(x, GAME_LABELS, rotation=35, ha="right", rotation_mode="anchor")
     _label(ax, "recorded ranked games this season", "x", p_frame)
-    ax.yaxis.set_major_formatter(lambda v, _: f"{v:+.1f}")
-    _label(ax, "ranks climbed (median)", "y", p_frame)
+    ax.yaxis.set_major_formatter(lambda v, _: ("+" if v > 0 else "") + _k(v))
+    _label(ax, "rank points gained (median)  ·  7,000 = one rank", "y", p_frame)
     ax.grid(axis="x", visible=False)
     _ax_style(ax, p_frame)
     return fig
@@ -857,8 +859,17 @@ def render_sim_vs_real(d: dict, sim: pd.DataFrame, progress: float = 1.0, highli
         ax.bar(xs, np.nan_to_num(v) * p_bars, bw * 0.92, color=color, zorder=3, label=label)
     ax.axhline(0, color=T.DIVIDER, lw=1.2, zorder=2)
     _window_ticks(ax, x)
-    ax.yaxis.set_major_formatter(lambda v, _: f"{v:+,.0f}")
-    _label(ax, "points per 100 games  (7,000 = one rank)", "y", p_frame)
+    vals = sim[[c for c, _, _ in series]].to_numpy(float)
+    lo_y, hi_y = min(0, np.nanmin(vals)), np.nanmax(vals)
+    lo_t, hi_t = int(np.floor(lo_y / RANK_PTS)) * RANK_PTS, int(np.ceil(hi_y / RANK_PTS)) * RANK_PTS
+    ax.set_yticks(np.arange(lo_t, hi_t + 1, RANK_PTS))
+    ax.set_ylim(lo_y * 1.15 if lo_y < 0 else 0, hi_y * 1.08)     # after the ticks, which would widen it
+    ax.yaxis.set_major_formatter(lambda v, _: "0" if v == 0 else
+                                 f"{v / 1000:+.0f}k\n{v / RANK_PTS:+.0f} rank" + ("s" if abs(v) > RANK_PTS else ""))
+    for k_ in range(int(np.floor(lo_y / 1000)), int(np.ceil(hi_y / 1000)) + 1):
+        if k_ % 2 and (k_ * 1000) % RANK_PTS:
+            ax.axhline(k_ * 1000, color=T.DIVIDER, lw=0.8, ls=(0, (4, 4)), alpha=0.55 * p_frame, zorder=1)
+    _label(ax, "rank points per 100 games", "y", p_frame)
     ax.grid(axis="x", visible=False)
     _legend(ax, p_frame, loc="upper left", size=16)
     _ax_style(ax, p_frame)
@@ -962,7 +973,7 @@ def render_missing_skew(d: dict, progress: float = 1.0, highlight=None):
                         ha="center", va="bottom" if g >= 0 else "top", color=T.GOLD if g >= 0 else T.RED,
                         fontsize=T.px_to_pt(20), fontweight="bold", alpha=p_lab)
     ax.axhline(0, color=T.DIVIDER, lw=1.2, zorder=2)
-    ax.set_ylim(min(0, np.nanmin(v)) - span * 0.15, max(0, np.nanmax(v)) + span * 0.2)
+    ax.set_ylim(0 if np.nanmin(v) >= 0 else np.nanmin(v) - span * 0.15, max(0, np.nanmax(v)) + span * 0.2)
     ax.set_xticks(x, [f"{lab}\n→ {e:.1f}%" for lab, e in zip(t["window"], t["estimated"])])
     _label(ax, "recorded win rate  →  estimated real win rate", "x", p_frame)
     ax.yaxis.set_major_formatter(lambda v_, _: f"{v_:+.1f}")
@@ -1142,6 +1153,8 @@ def main() -> int:
         print("\n" + summary(T.PROJECT_ROOT / args.name))
         return 0
     data_dir = Path(args.season_dir) if args.season_dir else T.PROJECT_ROOT / "season_1"
+    for old in (data_dir / "graphs").glob("season_*.png"):        # cards that no longer exist don't linger
+        old.unlink()
     for p in T.save_cards(cards(data_dir, args.sim), data_dir / "graphs", args.progress):
         print(f"Saved {p}")
     print("\n" + summary(data_dir, args.sim))
