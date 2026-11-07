@@ -365,18 +365,53 @@ def confidence_label(c: float) -> str:
 # =============================================================================
 # HISTORY  (the same hero across recent week folders)
 # =============================================================================
+RANKED_LAUNCH = "2026-07-30"            # week 1 starts here (00:00 UTC); week N = the N-th 7-day block
+
+
+def period_weeks(data_dir) -> list[int]:
+    """Week numbers that lie inside a registered period (from its period_meta.json start/end), e.g. 1-14
+    for a whole-season period. A week counts if it starts at most a day before the period does and
+    ends no later than a day after it. Empty for week folders or when the meta is missing."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    try:
+        meta = json.loads((Path(data_dir) / "period_meta.json").read_text())
+        start = datetime.fromisoformat(meta["start"])
+        end = datetime.fromisoformat(meta["end"]) if meta.get("end") else datetime.now(timezone.utc)
+    except (FileNotFoundError, KeyError, ValueError, TypeError):
+        return []
+    launch = datetime.fromisoformat(RANKED_LAUNCH).replace(tzinfo=timezone.utc)
+    start, end = (t if t.tzinfo else t.replace(tzinfo=timezone.utc) for t in (start, end))
+    slack = timedelta(days=1)
+    out, w = [], 1
+    while True:
+        ws = launch + timedelta(days=7 * (w - 1))
+        we = ws + timedelta(days=7)
+        if ws > end:
+            break
+        if ws >= start - slack and we <= end + slack:
+            out.append(w)
+        w += 1
+    return out
+
+
 def hero_history(data_dir, weeks: int = 8) -> pd.DataFrame:
-    """hero_winrates of this week and up to `weeks - 1` earlier week folders next to it:
-    week, label, hero_name, games, winrate, wr_lo, wr_hi, pick_rate. Empty for non-week folders."""
+    """hero_winrates per week: for a week folder, this week and up to `weeks - 1` earlier week folders
+    next to it; for a period folder (e.g. a whole season), every week inside the period.
+    Columns: week, label, hero_name, games, winrate, wr_lo, wr_hi, pick_rate. Empty if no week folders."""
     import re
     from pathlib import Path
     data_dir = Path(data_dir)
     m = re.search(r"week(\d+)", data_dir.name)
-    if not m:
-        return pd.DataFrame()
-    n, frames = int(m.group(1)), []
-    for w in range(max(1, n - weeks + 1), n + 1):
-        d = data_dir.with_name(data_dir.name.replace(m.group(0), f"week{w}", 1))
+    if m:
+        n = int(m.group(1))
+        dirs = [(w, data_dir.with_name(data_dir.name.replace(m.group(0), f"week{w}", 1)))
+                for w in range(max(1, n - weeks + 1), n + 1)]
+    else:
+        dirs = [(w, data_dir.with_name(f"week{w}_analysis")) for w in period_weeks(data_dir)]
+    frames = []
+    for w, d in dirs:
         if (d / "hero_winrates.csv").exists():
             h = add_winrate_ci(add_pick_rate(load_hero_meta(d)))
             frames.append(h.assign(week=w, label=f"W{w}"))
@@ -428,7 +463,7 @@ def low_high_table(g: pd.DataFrame) -> pd.DataFrame:
     """Per hero: pooled win rate in low-rank and high-rank brackets, in the column names the shared
     split scatter uses (early_* = low rank, late_* = high rank), plus the change and its confidence."""
     def pooled(brackets, tag):
-        s = g[g["bracket"].isin(brackets)].groupby(["hero_name", "hero_type"])[["games", "wins"]].sum()
+        s = g[g["bracket"].isin(brackets)].groupby(["hero_name", "hero_type"], dropna=False)[["games", "wins"]].sum()
         lo, hi = wilson_ci(s["wins"], s["games"])
         return pd.DataFrame({f"{tag}_wr": s["wins"] / s["games"] * 100, f"{tag}_n": s["games"],
                              f"{tag}_lo": lo * 100, f"{tag}_hi": hi * 100})

@@ -4,12 +4,12 @@ query_transform.py — weekly SQL transforms -> the CSV/Parquet files the chart 
 How it works
     1. look the period up in patch_periods (written by the ingest)
     2. build two temp tables on one connection, once:
-         wk_matches  complete matches of the period (12 players, 6 per side, one winner)
+         wk_matches  complete matches of the period (12 players, 6 per side, one winner, 12 different heroes)
          wk_players  their 12 player rows, joined to heroes
        plus wk_type_counts (heroes of each archetype per team, zeros included)
     3. run every export against those small tables, instead of re-filtering the full
        match_player table 15 times
-    4. write <project>/week<N>_analysis/<name>.csv (or <project>/<period name>/ for other periods),
+    4. write <project>/period_analyses/week<N>_analysis/<name>.csv (or .../<period name>/ for other periods),
        plus period_meta.json: the label charts print and the folder they compare against
 
 Using only complete matches keeps every count consistent (12 hero rows per match), which the
@@ -54,7 +54,9 @@ STAGING = [
               average_badge / 10 AS rank_tier          -- 1 Initiate ... 11 Eternus; NULL/0 = unknown
        FROM match_hero_roster
        WHERE start_time >= %(start)s AND (%(end)s::timestamptz IS NULL OR start_time < %(end)s)
-         AND cardinality(team0) = 6 AND cardinality(team1) = 6""",
+         AND cardinality(team0) = 6 AND cardinality(team1) = 6
+         -- no hero twice in one match (rare API glitch; validate_week reports how many)
+         AND cardinality(ARRAY(SELECT DISTINCT h FROM unnest(team0 || team1) AS h)) = 12""",
     """CREATE TEMP TABLE wk_players AS
        SELECT mp.match_id, mp.team, mp.won, mp.hero_id, m.duration_s, m.rank_tier,
               h.name AS hero_name, LOWER(h.hero_type) AS hero_type
@@ -202,7 +204,8 @@ def period_info(cur, name: str) -> dict:
         p["label"], p["compare_dir"] = f"Week {n}", (f"week{n - 1}_analysis" if n > 1 else None)
     else:
         p["label"] = p["description"] or name.replace("_", " ")
-        p["compare_dir"] = period_folder(p["compare_to"]) if p["compare_to"] else None
+        # folder NAME only: the comparison folder sits next to this one (chart_stats.previous_week_dir)
+        p["compare_dir"] = Path(period_folder(p["compare_to"])).name if p["compare_to"] else None
     return p
 
 
@@ -243,7 +246,7 @@ def main() -> int:
         names += [compare] if compare else []
     rc = 0
     for n in names:
-        out_dir = Path(args.out_dir) / period_folder(n) if (args.out_dir and len(names) > 1) else \
+        out_dir = Path(args.out_dir) / Path(period_folder(n)).name if (args.out_dir and len(names) > 1) else \
             Path(args.out_dir) if args.out_dir else PROJECT_ROOT / period_folder(n)
         rc |= transform(n, out_dir)
     return rc

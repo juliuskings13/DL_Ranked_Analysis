@@ -7,10 +7,13 @@ Workflow
   2. In LosslessCut, mark one segment per card and name it after the card, e.g. patch_hero_rat_king
      (".png" on the end is fine). Want a short from a segment too? Add "| HOOK TEXT" to its name,
      exactly like render_pipeline: "patch_hero_rat_king | RAT KING GOT GUTTED". "| -" makes a short
-     without hook text.
+     without hook text. Cutting a stumble out of the middle of a card? Give both pieces the same card
+     name: back-to-back segments on one card share one animation (it builds once and keeps going).
   3. Export the segments: File -> Export project -> CSV (Start, End, Name).
   4. Run:
        python assemble_video.py RECORDING.mp4 SEGMENTS.csv patches/2026-10-30_...      (or a week folder)
+       python assemble_video.py REC.mp4 SEGS.csv season_2_start/ patches/<patch>/ patch_2026-11-05/ \
+           --order season2_patch                       (cards from several folders in one video)
          [--add closer.mp4]                 (a whole recording, no cuts: named after the card it goes with)
 
 What it does
@@ -225,26 +228,54 @@ def chapters(segs: list[dict]) -> list[str]:
 
 
 # --- card clips -------------------------------------------------------------------
-def render_cards(data_dir: Path, segs: list[dict], tmp: Path, workers: int) -> None:
+def collect_all(dirs: list[Path]) -> dict:
+    """Cards from every folder, merged; on a name clash the first folder listed wins."""
+    import animate as A
+    out = {}
+    for d in dirs:
+        for name, draw in A.collect_cards(d).items():
+            if name in out:
+                print(f"  [!] card {name!r} is in more than one folder; using the one from the first")
+                continue
+            out[name] = draw
+    return out
+
+
+def render_cards(data_dirs: list[Path], segs: list[dict], tmp: Path, workers: int) -> None:
     import animate as A
     import theme as T
     A._CARDS.clear()
-    A._CARDS.update(A.collect_cards(data_dir))
+    A._CARDS.update(collect_all(data_dirs))
+    # consecutive segments on the same card (e.g. one take with a stumble cut out of the middle) share ONE
+    # animation spanning all of them: the card builds once and each later piece picks up where the last ended
+    groups: list[list[dict]] = []
+    for s in segs:
+        if groups and groups[-1][-1]["card"] == s["card"]:
+            groups[-1].append(s)
+        else:
+            groups.append([s])
     with mp.get_context("fork").Pool(workers) as pool:
-        for k, s in enumerate(segs):
-            draw = A._CARDS[s["card"]]
+        for k, g in enumerate(groups):
+            draw = A._CARDS[g[0]["card"]]
             build = getattr(draw, "build_s", None) or A.DEFAULT_BUILD_S     # always the card's natural speed
-            d = s["dur"]
-            # take shorter than the build: freeze the first camera frame (silent) at the start of the segment
-            s["pre"] = max(0.0, build + FREEZE_SPARE_S - d)
-            s["len"] = d + s["pre"]
-            hold = s["len"] - build + 0.5                      # a little spare; the composite trims to the length
+            total = sum(s["dur"] for s in g)
+            if k == 0 and build + FREEZE_SPARE_S > total:
+                # the video's first card: never open on a frozen, silent camera; build faster to fit the take
+                build = max(0.6, total - FREEZE_SPARE_S)
+            # takes shorter than the build: freeze the first camera frame (silent) at the start of the group
+            pre = max(0.0, build + FREEZE_SPARE_S - total)
+            hold = total + pre - build + 0.5                   # a little spare; the composite trims to the length
             out = tmp / f"card_{k:03d}"
-            A.render_scene(A.Scene(s["card"], build, hold), pool, out, CARD_FPS, "h264")
-            s["clip"] = str(out.with_suffix(".mp4"))
-            s["build"] = build
-            print(f"  [+] card {k + 1}/{len(segs)} {s['card']}: {d:.1f}s take, builds in {build:.1f}s"
-                  + (f"  (frozen camera for {s['pre']:.1f}s at the start)" if s["pre"] else ""))
+            A.render_scene(A.Scene(g[0]["card"], build, hold), pool, out, CARD_FPS, "h264")
+            offset = 0.0
+            for i, s in enumerate(g):
+                s["pre"] = pre if i == 0 else 0.0
+                s["len"] = s["dur"] + s["pre"]
+                s["clip"], s["clip_offset"], s["build"] = str(out.with_suffix(".mp4")), offset, build
+                offset += s["len"]
+            print(f"  [+] card {k + 1}/{len(groups)} {g[0]['card']}: {total:.1f}s"
+                  + (f" over {len(g)} pieces" if len(g) > 1 else " take") + f", builds in {build:.1f}s"
+                  + (f"  (frozen camera for {pre:.1f}s at the start)" if pre else ""))
     T.plt.close("all")
 
 
@@ -282,7 +313,8 @@ def main_piece_cmd(rp, raw: str, s: dict, out: str, face_crop: str | None, use_v
     cmd = ["ffmpeg", *rp.FFMPEG_BASE]
     if use_vaapi:
         cmd += ["-vaapi_device", rp.VAAPI_DEVICE]
-    cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{take:.3f}", "-i", raw, "-i", s["clip"]]
+    cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{take:.3f}", "-i", raw,
+            "-ss", f"{s.get('clip_offset', 0.0):.3f}", "-i", s["clip"]]
     a = rp.AUDIO_TRACK if rp.AUDIO_TRACK is not None else 0
     # camera on the LEFT, card on the right
     g = (f"[1:v]fps={fps_s},scale={CARD_PX}:{CARD_PX}:flags=lanczos,setsar=1,tpad=stop_mode=clone:stop_duration=5[c];"
@@ -302,7 +334,8 @@ def short_cmd(rp, raw: str, s: dict, out: str, face_crop: str | None, use_vaapi:
     cmd = ["ffmpeg", *rp.FFMPEG_BASE]
     if use_vaapi:
         cmd += ["-vaapi_device", rp.VAAPI_DEVICE]
-    cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{take:.3f}", "-i", raw, "-i", s["clip"]]
+    cmd += ["-ss", f"{s['start']:.3f}", "-t", f"{take:.3f}", "-i", raw,
+            "-ss", f"{s.get('clip_offset', 0.0):.3f}", "-i", s["clip"]]
     n = 2
     if png:
         cmd += ["-loop", "1", "-framerate", fps_s, "-t", str(rp.HOOK_SHOW_SECONDS + rp.HOOK_FADE_SECONDS), "-i", png]
@@ -340,11 +373,36 @@ def run_with_fallback(rp, build_cmd, label: str) -> bool:
     return False
 
 
+def make_main_video(rp, args, segs: list[dict], tmp: Path, out: Path) -> None:
+    """Card + face for every segment, joined into the long video, plus its chapters file."""
+    pieces = []
+    for k, s in enumerate(segs):
+        piece = str(tmp / f"piece_{k:03d}.mkv")
+        if not run_with_fallback(rp, lambda v, s=s, piece=piece: main_piece_cmd(
+                rp, s["rec"], s, piece, args.face_crop, v), s["card"]):
+            raise SystemExit(f"Could not render the segment for {s['card']}.")
+        pieces.append(piece)
+        print(f"  [+] {k + 1}/{len(segs)} {s['card']}")
+    # every piece has the same encoder settings, so they join without a second encode (as render_pipeline does)
+    lst = tmp / "pieces.txt"
+    lst.write_text("".join(f"file {rp.concat_quote(p)}\n" for p in pieces))
+    ok, err = rp.run_ffmpeg(["ffmpeg", *rp.FFMPEG_BASE, "-f", "concat", "-safe", "0", "-i", str(lst),
+                             "-c", "copy", "-movflags", "+faststart", str(out)])
+    if not ok:
+        raise SystemExit(f"Joining failed: {rp.short_error(err)}")
+    chap = chapters(segs)
+    out.with_suffix(".chapters.txt").write_text("\n".join(chap) + "\n")
+    print(f"--> Video: {out} ({rp.get_video_duration(str(out)) / 60:.1f} min)\n--> Chapters: "
+          f"{out.with_suffix('.chapters.txt')}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Recording + cards -> finished video, chapters and shorts")
     ap.add_argument("recording")
     ap.add_argument("segments_csv", type=Path, help="LosslessCut export (Start, End, Name)")
-    ap.add_argument("cards_dir", type=Path, help="patch folder or week folder the cards come from")
+    ap.add_argument("cards_dirs", type=Path, nargs="+", metavar="cards_dir",
+                    help="folder(s) the cards come from (patch, week, period, season...). Several can be "
+                         "given for one video; the first one's order.txt / patch preset sets the order")
     ap.add_argument("--out", type=Path, default=None, help="finished video (default: <longs_dir>/<csv name>.mp4)")
     ap.add_argument("--order", default="auto",
                     help="auto (default), csv, a preset name from orders/ (e.g. patch_notes), or an order file")
@@ -358,15 +416,24 @@ def main() -> int:
     ap.add_argument("--pipeline", default=None, help="path to render_pipeline.py")
     ap.add_argument("--cpu", action="store_true", help="x264 instead of the GPU encoder")
     ap.add_argument("--no-shorts", action="store_true")
+    ap.add_argument("--shorts-only", action="store_true",
+                    help="only make the shorts (skips the long video; renders just the cards shorts use)")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 1))
     args = ap.parse_args()
+    for k in ("face_crop", "short_crop"):              # accept "crop=1120:1440:630:0" too (ffmpeg filter syntax)
+        v = re.sub(r"^\s*crop\s*=\s*", "", getattr(args, k) or "")
+        if v and not re.fullmatch(r"\d+:\d+:\d+:\d+", v):
+            raise SystemExit(f"--{k.replace('_', '-')} must be w:h:x:y, e.g. 1120:1440:630:0 (got {getattr(args, k)!r})")
+        setattr(args, k, v or None)
 
     rp = load_pipeline(args.pipeline)
     if args.cpu:
         rp.USE_VAAPI = False
     import animate as A
-    patch = (args.cards_dir / "changes.csv").exists()
-    cards = A.collect_cards(args.cards_dir)
+    args.cards_dir = args.cards_dirs[0]
+    patch_dirs = [d for d in args.cards_dirs if (d / "changes.csv").exists()]
+    patch = bool(patch_dirs)
+    cards = collect_all(args.cards_dirs)
     for a in args.add:
         if len(a) > 2:
             raise SystemExit(f"--add takes a recording and at most one CSV or card name, got: {' '.join(a)}")
@@ -383,7 +450,8 @@ def main() -> int:
         pass
     if patch:
         import patch_notes as P
-        display.update({slug(h): h for h in P.load_changes(args.cards_dir)[0]["subject"].unique()})
+        for d in patch_dirs:
+            display.update({slug(h): h for h in P.load_changes(d)[0]["subject"].unique()})
     rules, how = resolve_order(args.order, args.cards_dir, patch)
     segs = apply_order(segs, rules, display)
     print(f"Order: {how}")
@@ -394,45 +462,64 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=str(out.parent)) as td:
         tmp = Path(td)
+        if args.shorts_only:
+            # every piece of a card that has a short, so its animation is timed exactly as in the long video
+            short_cards = {s["card"] for s in segs if s["short"]}
+            segs = [s for s in segs if s["card"] in short_cards]
+            if not segs:
+                raise SystemExit("No shorts flagged: name a segment 'card | HOOK TEXT' in LosslessCut.")
         print("--> Rendering card animations to the length of each take...")
-        render_cards(args.cards_dir, segs, tmp, args.workers)
+        render_cards(args.cards_dirs, segs, tmp, args.workers)
 
-        print("--> Card + face, one piece per segment...")
-        pieces = []
-        for k, s in enumerate(segs):
-            piece = str(tmp / f"piece_{k:03d}.mkv")
-            if not run_with_fallback(rp, lambda v, s=s, piece=piece: main_piece_cmd(
-                    rp, s["rec"], s, piece, args.face_crop, v), s["card"]):
-                raise SystemExit(f"Could not render the segment for {s['card']}.")
-            pieces.append(piece)
-            print(f"  [+] {k + 1}/{len(segs)} {s['card']}")
-        # every piece has the same encoder settings, so they join without a second encode (as render_pipeline does)
-        lst = tmp / "pieces.txt"
-        lst.write_text("".join(f"file {rp.concat_quote(p)}\n" for p in pieces))
-        ok, err = rp.run_ffmpeg(["ffmpeg", *rp.FFMPEG_BASE, "-f", "concat", "-safe", "0", "-i", str(lst),
-                                 "-c", "copy", "-movflags", "+faststart", str(out)])
-        if not ok:
-            raise SystemExit(f"Joining failed: {rp.short_error(err)}")
-        chap = chapters(segs)
-        out.with_suffix(".chapters.txt").write_text("\n".join(chap) + "\n")
-        print(f"--> Video: {out} ({rp.get_video_duration(str(out)) / 60:.1f} min)\n--> Chapters: "
-              f"{out.with_suffix('.chapters.txt')}")
+        if not args.shorts_only:
+            make_main_video(rp, args, segs, tmp, out)
 
         if not args.no_shorts:
-            made = 0
-            for s in [s for s in segs if s["short"]]:
-                name = rp.clean_filename(s["card"])
+            # back-to-back pieces of one card with the same hook = ONE short (e.g. a take with a stumble cut
+            # out); the hook text and intro sound go on its first piece only
+            groups: list[list[dict]] = []
+            for s in segs:
+                if not s["short"]:
+                    continue
+                prev = groups[-1][-1] if groups else None
+                if prev is not None and prev["card"] == s["card"] and prev["hook"] == s["hook"] \
+                        and segs.index(prev) + 1 == segs.index(s):
+                    groups[-1].append(s)
+                else:
+                    groups.append([s])
+            made, used = 0, {}
+            for g in groups:
+                base = rp.clean_filename(g[0]["card"])
+                used[base] = used.get(base, 0) + 1                  # two shorts from one card: _short, _short_2
+                name = base if used[base] == 1 else f"{base}_{used[base]}"
                 dest = Path(rp.shorts_dir) / f"{name}_short.mp4"
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                hook = g[0]["hook"]
                 png = None
-                if s["hook"]:
+                if hook:
                     png = str(tmp / f"hook_{name}.png")
-                    rp.generate_text_overlay_image(s["hook"], png)
-                fx = rp.pick_intro_fx() if s["hook"] else None
-                if run_with_fallback(rp, lambda v, s=s, png=png, fx=fx: short_cmd(
-                        rp, s["rec"], s, str(dest), args.short_crop, v, png, fx), f"short {name}"):
+                    rp.generate_text_overlay_image(hook, png)
+                fx = rp.pick_intro_fx() if hook else None
+                parts, ok = [], True
+                for i, s in enumerate(g):
+                    out_i = str(dest) if len(g) == 1 else str(tmp / f"short_{name}_{i}.mp4")
+                    ok = run_with_fallback(rp, lambda v, s=s, o=out_i, png=(png if i == 0 else None),
+                                           fx=(fx if i == 0 else None): short_cmd(
+                        rp, s["rec"], s, o, args.short_crop, v, png, fx), f"short {name}")
+                    if not ok:
+                        break
+                    parts.append(out_i)
+                if ok and len(parts) > 1:
+                    lst = tmp / f"short_{name}.txt"
+                    lst.write_text("".join(f"file {rp.concat_quote(x)}\n" for x in parts))
+                    ok, err = rp.run_ffmpeg(["ffmpeg", *rp.FFMPEG_BASE, "-f", "concat", "-safe", "0", "-i", str(lst),
+                                             "-c", "copy", "-movflags", "+faststart", str(dest)])
+                    if not ok:
+                        print(f"  [!] joining short {name} failed: {rp.short_error(err)}")
+                if ok:
                     made += 1
-                    print(f"  [+] short: {dest}")
+                    secs = sum(s["len"] for s in g)
+                    print(f"  [+] short: {dest}  ({secs:.0f}s" + (f", {len(g)} pieces" if len(g) > 1 else "") + ")")
             if made:
                 print(f"--> {made} shorts in {rp.shorts_dir}")
     return 0

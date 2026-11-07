@@ -4,7 +4,7 @@ points won / lost / kept, what demotion shields actually did, the ladder week by
 and the Monte Carlo sims vs reality.
 
 Two steps:
-    python season_summary.py export [--start 2026-07-30] [--end 2026-11-05] [--name season_1]
+    python season_summary.py export [--start 2026-07-30] [--end "2026-11-05 20:00"] [--name season_1]
         one pass over match_player (needs the rank progress columns) -> <project>/season_1/:
         players.parquet (one row per player), weekly_ranks.csv, losses_by_rank.csv, rank_changes.csv,
         season_meta.json
@@ -78,6 +78,7 @@ SIM_FILES = {"with shields": "ranked_monte_carlo_results_3_dailies_realistic.par
              "no shields": "ranked_monte_carlo_results_shieldless_3_dailies.parquet"}
 SIM_COLORS = {"with shields": "#4dabf7", "no shields": T.RED}
 SEASON_START = datetime(2026, 7, 30, tzinfo=timezone.utc)
+SEASON_END = datetime(2026, 11, 5, 20, 0, tzinfo=timezone.utc)   # Season 2 started here (rank_interval 2)
 
 
 def rank_of(progress) -> np.ndarray:
@@ -1147,7 +1148,8 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("export")
     e.add_argument("--start", default=SEASON_START.date().isoformat())
-    e.add_argument("--end", default=None, help="YYYY-MM-DD, exclusive (default: now)")
+    e.add_argument("--end", default=SEASON_END.strftime("%Y-%m-%d %H:%M"),
+                   help="'YYYY-MM-DD[ HH:MM]' UTC, exclusive (default: the end of Season 1)")
     e.add_argument("--name", default="season_1")
     c = sub.add_parser("cards")
     c.add_argument("season_dir", nargs="?", default=None)
@@ -1158,10 +1160,10 @@ def main() -> int:
         start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
         end = (datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc) if args.end
                else datetime.now(timezone.utc))
-        export(start, end, T.PROJECT_ROOT / args.name)
-        print("\n" + summary(T.PROJECT_ROOT / args.name))
+        export(start, end, T.ANALYSES_ROOT / args.name)
+        print("\n" + summary(T.ANALYSES_ROOT / args.name))
         return 0
-    data_dir = Path(args.season_dir) if args.season_dir else T.PROJECT_ROOT / "season_1"
+    data_dir = Path(args.season_dir) if args.season_dir else T.ANALYSES_ROOT / "season_1"
     for old in (data_dir / "graphs").glob("season_*.png"):        # cards that no longer exist don't linger
         old.unlink()
     for p in T.save_cards(cards(data_dir, args.sim), data_dir / "graphs", args.progress):

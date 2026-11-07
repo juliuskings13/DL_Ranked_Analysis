@@ -53,7 +53,7 @@ CHART_MODULES = [
     "hero_wr_total_matches_split_column", "pick_rate_winrate_scatter", "balance_wr_distribution",
     "archetype_stacking", "matchup_bubble_chart", "hero_strength_and_scaling", "match_duration",
     "hero_duo_synergy_table", "most_freq_comps", "comp_uniqueness", "week_over_week",
-    "hero_spotlight", "rank_performance", "patch_notes", "season_summary",
+    "hero_spotlight", "rank_performance", "patch_notes", "season_summary", "season_reset",
 ]
 DEFAULT_BUILD_S = 6.0       # seconds for a chart to draw itself in (cards can suggest their own: draw.build_s)
 DEFAULT_HOLD_S = 3.0        # seconds on the finished card (before any highlight beats)
@@ -117,12 +117,20 @@ def collect_cards(data_dir: Path, **opts) -> dict:
     """{card name: draw(progress, highlight)} across every chart script."""
     out = {}
     # a patch folder (patch_notes.py) and a season folder (season_summary.py) only have their own cards
-    if (Path(data_dir) / "changes.csv").exists():
-        modules = ["patch_notes"]
-    elif (Path(data_dir) / "season_meta.json").exists():
-        modules = ["season_summary"]
+    # a folder can hold a season analysis (season_summary.py) next to a whole-season period's weekly-style
+    # exports (e.g. season_1/ from both `season_summary.py export` and `run_pipeline.py --period Season_1`)
+    d = Path(data_dir)
+    if (d / "changes.csv").exists():
+        # patch folder; with season_reset's two data files copied in, its cards join (combined video)
+        modules = ["patch_notes"] + (["season_reset"] if (d / "season_reset_meta.json").exists() else [])
     else:
-        modules = [m for m in CHART_MODULES if m not in ("patch_notes", "season_summary")]
+        modules = []
+        if (d / "season_meta.json").exists():
+            modules.append("season_summary")
+        if (d / "season_reset_meta.json").exists():
+            modules.append("season_reset")
+        if (d / "hero_winrates.csv").exists() or not modules:
+            modules += [m for m in CHART_MODULES if m not in ("patch_notes", "season_summary", "season_reset")]
     for mod_name in modules:
         try:
             mod = importlib.import_module(mod_name)

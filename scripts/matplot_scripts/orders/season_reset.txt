@@ -1,0 +1,16 @@
+# Season 2 launch + the patch hours before it. Pass all three folders:
+#   assemble_video.py REC.mp4 SEGS.csv season_2_start/ patches/2026-11-05_minor-update-11-04-2026/ patch_2026-11-05/ --order season2_patch
+s2_opener              | Season 2 is here
+s2_rules               | What changed?
+s2_reset_by_rank       | Who won and lost in the reset?
+s2_reset_flow          | What the ladder looks like now
+patch_opener           | The last-minute patch before Season 2
+patch_heroes           | Hero changes overview
+patch_heroes_size      | How big were the hero changes?
+patch_hero_*           | {name}                          | a-z
+patch_items_*          | Item changes
+patch_closer           | Patch winners & losers
+hero_movers            | Did the patch winners actually win?
+rank_best_heroes       | Best heroes to climb with (early read)
+tier_list              | Early Season 2 tier list
+s2_closer              | What it all means for Season 2

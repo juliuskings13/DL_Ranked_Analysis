@@ -54,6 +54,7 @@ def load_all(data_dir: Path) -> dict:
         d["rank"] = d["power"].rank(ascending=False, method="min").astype(int)
         d = d.rename(columns={"total_matches": "games"})
     out = {"d": d.set_index("hero_name"), "n_heroes": len(d), "hist": hero_history(data_dir, TREND_WEEKS),
+           "is_period": "week" not in Path(data_dir).name.lower(),
            "dur": None, "duos": None, "prev_label": T.week_label_from_dir(prev) if prev is not None else None}
     try:
         from hero_strength_and_scaling import load
@@ -228,9 +229,9 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
     # --- trend (top left) and rank (top right)
     tw = 0.44
     row_gap = 0.085                                   # room for the rotated rank names above the lower panels
-    ax = _panel(fig, [left, split + row_gap, (right - left) * tw, top - split - row_gap], "WIN RATE, LAST 8 WEEKS",
-                p_frame)
     h = data["hist"]
+    trend_title = ("WIN RATE BY WEEK" if data.get("is_period") else f"WIN RATE, LAST {TREND_WEEKS} WEEKS")
+    ax = _panel(fig, [left, split + row_gap, (right - left) * tw, top - split - row_gap], trend_title, p_frame)
     h = h[h["hero_name"] == hero] if len(h) else h
     if len(h) >= 2:
         x = h["week"].to_numpy(float)                   # real week numbers: gaps stay gaps
@@ -248,7 +249,8 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
                 ax.text(x[i], v + 0.35, f"{v:.1f}%", ha="center", va="bottom", color=T.TEXT,
                         fontsize=T.px_to_pt(16), fontweight="bold", path_effects=T.STROKE, zorder=5)
         weeks = np.arange(int(x[0]), int(x[-1]) + 1)
-        ax.set_xticks(weeks, [f"W{w}" for w in weeks])
+        step = 1 if len(weeks) <= 16 else 2          # plain week numbers: the panel title says "by week"
+        ax.set_xticks(weeks[::step], [str(w) for w in weeks[::step]])
         lo, hi = min(h["wr_lo"].min(), 49), max(h["wr_hi"].max(), 51)
         ax.set_ylim(lo - 0.6, hi + 0.9)
         ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")

@@ -132,6 +132,7 @@ NAME_MIN_W_PX = 300         # but the name always gets at least this much width
 TITLE_MAX_PX = 62           # "VITALITY ITEMS"
 SUBTITLE_MAX_PX = 23
 ITEMS_PER_CARD_MAX = 8
+OPENER_BUILD_S = 3.0        # patch_opener builds in this long (other cards: animate's 6 s or their own)
 
 # stats where LESS is better for whoever owns them (compared on the raw, signed value)
 LOWER_BETTER = [r"cool ?downs?", r"\bcd\b", r"cast (time|delay)", r"\bdelay\b", r"\bcosts?\b", r"\bprice\b",
@@ -253,8 +254,8 @@ def load_names(online: bool = True) -> dict:
     if cache.exists():
         return _normalize_names(json.loads(cache.read_text()))
     print("  (no item/ability names: run ingest_game_assets.py; hero detection only)")
-    weeks = sorted(T.PROJECT_ROOT.glob("week*_analysis/hero_winrates.csv"))
-    heroes = sorted(pd.read_csv(weeks[-1])["hero_name"].unique()) if weeks else []
+    weeks = T.week_dirs()
+    heroes = sorted(pd.read_csv(weeks[-1] / "hero_winrates.csv")["hero_name"].unique()) if weeks else []
     return _normalize_names({"heroes": heroes})
 
 
@@ -1521,9 +1522,9 @@ def cards(data_dir: Path, **_) -> dict:
     from hero_spotlight import slug
     types = {}
     try:
-        weeks = sorted(T.PROJECT_ROOT.glob("week*_analysis/hero_winrates.csv"))
+        weeks = T.week_dirs()
         if weeks:
-            hw = pd.read_csv(weeks[-1])
+            hw = pd.read_csv(weeks[-1] / "hero_winrates.csv")
             types = dict(zip(hw["hero_name"], hw["hero_type"].str.lower()))
     except Exception:
         pass
@@ -1532,6 +1533,7 @@ def cards(data_dir: Path, **_) -> dict:
                                render_closer(heroes, items, meta, item_icons, progress, highlight))
         out["patch_opener"] = (lambda progress=1.0, highlight=None:
                                render_opener(heroes, meta, types, progress, highlight))
+        out["patch_opener"].build_s = OPENER_BUILD_S     # simple title card: don't make the intro wait
         out["patch_heroes"] = (lambda progress=1.0, highlight=None:
                                render_overview(heroes, "hero", meta, progress, highlight))
         out["patch_heroes_size"] = (lambda progress=1.0, highlight=None:

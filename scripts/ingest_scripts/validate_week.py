@@ -10,13 +10,15 @@ Checks
     unknown_heroes      hero_ids missing from `heroes` (would vanish from every analysis join)
     incomplete_matches  matches without exactly 12 players / 6 per team
     winner_consistency  matches where won flags don't mark exactly one team of 6 winners
-    duplicate_heroes    the same hero twice in one match
+    duplicate_heroes    the same hero twice in one match (a handful are API glitches: query_transform
+                        drops those matches, so this only FAILs above --max-duplicate-pct of matches)
     duration_mismatch   players of one match disagreeing on match length
     roster_coverage     complete matches missing from match_hero_roster
     ban_coverage        share of complete matches with recorded bans (info only: the API
                         records bans only for matches whose replay it processed)
 
 Usage: python validate_week.py [--week N | --date YYYY-MM-DD | --period NAME] [--max-incomplete-pct 2.0]
+                              [--max-duplicate-pct 0.01]
 """
 from __future__ import annotations
 
@@ -48,8 +50,10 @@ CHECKS = {
                COUNT(*) FILTER (WHERE n_won <> 6 OR teams_won <> 1 OR mismatch)
         FROM m"""),
     "duplicate_heroes": ("FAIL", """
-        SELECT COUNT(*) > 0, COUNT(*) FROM (
-            SELECT 1 FROM wk GROUP BY match_id, hero_id HAVING COUNT(*) > 1) d"""),
+        WITH d AS (SELECT DISTINCT match_id FROM wk GROUP BY match_id, hero_id HAVING COUNT(*) > 1)
+        SELECT 100.0 * (SELECT COUNT(*) FROM d) / NULLIF((SELECT COUNT(DISTINCT match_id) FROM wk), 0)
+                   > %(max_duplicate)s,
+               (SELECT COUNT(*) FROM d)"""),
     "duration_mismatch": ("WARN", """
         SELECT COUNT(*) > 0, COUNT(*) FROM (
             SELECT 1 FROM wk GROUP BY match_id HAVING MAX(duration_s) - MIN(duration_s) > 5) d"""),
@@ -69,6 +73,9 @@ def main() -> int:
     g.add_argument("--period", help="a period from register_period.py")
     ap.add_argument("--max-incomplete-pct", type=float, default=2.0,
                     help="incomplete matches above this share of the week are flagged")
+    ap.add_argument("--max-duplicate-pct", type=float, default=0.01,
+                    help="matches with a duplicated hero above this share fail the check (default 0.01%%, "
+                         "about 1 in 10,000); below it they are reported and skipped by query_transform")
     args = ap.parse_args()
 
     conn = connect()
@@ -89,9 +96,10 @@ def main() -> int:
             n_matches, n_rows = cur.fetchone()
             log.info("%s: %s matches, %s player rows", f"Week {week}" if isinstance(week, int) else week, f"{n_matches:,}", f"{n_rows:,}")
             for name, (severity, sql) in CHECKS.items():
-                cur.execute(sql, {"max_incomplete": args.max_incomplete_pct})
+                cur.execute(sql, {"max_incomplete": args.max_incomplete_pct,
+                                  "max_duplicate": args.max_duplicate_pct})
                 bad, count = cur.fetchone()
-                status = severity if bad else "PASS"
+                status = severity if bad else ("WARN" if name == "duplicate_heroes" and count else "PASS")
                 if status == "FAIL" or (status == "WARN" and worst == "PASS"):
                     worst = status
                 log.info("%-5s %-20s %s", status, name, f"{count:,}")

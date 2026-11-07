@@ -20,8 +20,10 @@ Usage:
     python ingest_dl_comm_api_parquet.py --period Release_Nurse_Harrow_d1-7   # see register_period.py
     python ingest_dl_comm_api_parquet.py --week 12 --source-files ./sample/*.parquet   # offline/dev
     python ingest_dl_comm_api_parquet.py --ranks-only --weeks 1-13      # backfill only the rank columns
+    python ingest_dl_comm_api_parquet.py --ranks-only --rosters-only --weeks 4-8   # ranks -> rosters, no download
 
---ranks-only updates the rank columns of rows already in match_player and nothing else: it reads ~10 small
+--ranks-only updates the rank columns of rows already in match_player (and copies the match badges onto
+match_hero_roster, which the rank charts read) and nothing else: it reads ~10 small
 columns instead of ~20, narrows the files by the week's match_id range (from your database), and with
 --weeks reads the file list once for every week.
 
@@ -520,6 +522,8 @@ def main() -> int:
     ap.add_argument("--source-files", nargs="+", help="local/remote parquet files instead of the manifest")
     ap.add_argument("--with-stats", action="store_true",
                     help="also load the 13 damage/healing stats (~10x more download)")
+    ap.add_argument("--rosters-only", action="store_true",
+                    help="with --ranks-only: just copy rank badges from match_player onto the rosters (no download)")
     ap.add_argument("--ranks-only", action="store_true",
                     help="only fill the rank columns of rows already loaded (fast backfill)")
     args = ap.parse_args()
@@ -559,6 +563,25 @@ def main() -> int:
         conn.close()
 
 
+def refresh_roster_badges(conn, start: datetime, end: datetime) -> int:
+    """Copy the match rank badges from match_player onto match_hero_roster (rosters built before the rank
+    columns existed have them empty). Returns the number of roster rows changed."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE match_hero_roster r
+            SET average_badge = p.average_badge, average_badge_team0 = p.b0, average_badge_team1 = p.b1
+            FROM (SELECT match_id, MAX(average_badge) AS average_badge,
+                         MAX(average_badge_team0) AS b0, MAX(average_badge_team1) AS b1
+                  FROM match_player WHERE start_time >= %s AND start_time < %s
+                  GROUP BY match_id) p
+            WHERE r.match_id = p.match_id AND r.start_time >= %s AND r.start_time < %s
+              AND p.average_badge IS NOT NULL
+              AND r.average_badge IS DISTINCT FROM p.average_badge""", (start, end, start, end))
+        n = cur.rowcount
+    conn.commit()
+    return n
+
+
 def ranks_only(args) -> int:
     ranges = []
     if args.weeks:
@@ -569,10 +592,15 @@ def ranks_only(args) -> int:
     conn = connect()
     try:
         ensure_schema(conn)                      # adds the rank columns if this DB predates them
-        entries = source_entries(args)
+        entries = None if args.rosters_only else source_entries(args)
         done = 0
         for what, start, end in ranges:
             log.info("%s: %s -> %s, rank columns only", what, f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}")
+            if args.rosters_only:                # no download: match_player already has the ranks
+                log.info("%s: %s roster rows got their rank badges", what,
+                         f"{refresh_roster_badges(conn, start, end):,}")
+                done += 1
+                continue
             rng = week_match_range(conn, start, end)
             if not rng:
                 log.warning("  no rows in match_player for this range yet: run the normal ingest for it first")
@@ -584,7 +612,8 @@ def ranks_only(args) -> int:
                 src.execute("DESCRIBE match_player").fetchall()
             n = backfill_ranks(src, conn, start, end)
             src.close()
-            log.info("%s: %s rows updated", what, f"{n:,}")
+            log.info("%s: %s rows updated, %s roster rows got their rank badges", what, f"{n:,}",
+                     f"{refresh_roster_badges(conn, start, end):,}")
             done += n
         log.info("Done: %s rows updated across %s range(s)", f"{done:,}", len(ranges))
         return 0 if done else 1

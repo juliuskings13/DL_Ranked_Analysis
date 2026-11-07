@@ -50,11 +50,15 @@ def period_name(week: int) -> str:
     return f"Week_{week}"
 
 
+ANALYSES_DIR = "period_analyses"      # every period's exports + cards live under <project>/period_analyses/
+
+
 def period_folder(name: str) -> str:
-    """Output folder for a period: Week_12 -> week12_analysis, anything else -> its name in lowercase."""
+    """Output folder for a period, relative to the project root:
+    Week_12 -> period_analyses/week12_analysis, anything else -> period_analyses/<name in lowercase>."""
     if name.startswith("Week_") and name[5:].isdigit():
-        return f"week{name[5:]}_analysis"
-    return name.lower()
+        return f"{ANALYSES_DIR}/week{name[5:]}_analysis"
+    return f"{ANALYSES_DIR}/{name.lower()}"
 
 
 def get_period(cur, name: str) -> dict:

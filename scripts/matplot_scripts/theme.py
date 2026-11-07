@@ -161,6 +161,13 @@ apply_mpl_theme()
 RANKED_START_DATE = date(2026, 7, 30)
 PROJECT_ROOT = Path(os.environ.get("DL_PROJECT_ROOT", Path.home() / "Projects" / "DL_ranked_analysis"))
 ASSETS_BASE = Path(os.environ.get("DL_ASSETS_DIR", PROJECT_ROOT / "assets"))
+ANALYSES_ROOT = PROJECT_ROOT / "period_analyses"      # week / period / season folders (exports + graphs/)
+
+
+def week_dirs() -> list[Path]:
+    """Every week<N>_analysis folder with a hero_winrates.csv, in week order (week9 before week14)."""
+    found = [p.parent for p in ANALYSES_ROOT.glob("week*_analysis/hero_winrates.csv")]
+    return sorted(found, key=lambda p: int(re.sub(r"\D", "", p.name) or 0))
 
 # Hero icon variant chosen by the win rate the icon sits next to (solo, duo or team):
 #   below ICON_WR_LOW            -> critical_icons/
@@ -180,7 +187,7 @@ def resolve_target_dir(arg: str | None = None) -> Path:
     candidate = arg if arg is not None else (sys.argv[1] if len(sys.argv) > 1 else None)
     if candidate and Path(candidate).is_dir():
         return Path(candidate)
-    return PROJECT_ROOT / f"week{get_current_week_number()}_analysis"
+    return ANALYSES_ROOT / f"week{get_current_week_number()}_analysis"
 
 
 def week_label_from_dir(data_dir: Path) -> str:

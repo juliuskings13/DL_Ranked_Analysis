@@ -29,7 +29,7 @@ week_num = days_elapsed // 7
 
 # Construct target week directory path (or use the folder given with --dir)
 project_root = Path(os.environ.get("DL_PROJECT_ROOT", Path.home() / "Projects" / "DL_ranked_analysis"))
-target_dir = Path(args.dir) if args.dir else project_root / f"week{week_num}_analysis"
+target_dir = Path(args.dir) if args.dir else project_root / "period_analyses" / f"week{week_num}_analysis"
 
 # Every script renders cards designed on a 1080 grid, output at T.OUT_PX (1440) via theme.py / chart_stats.py
 plotting_scripts = [

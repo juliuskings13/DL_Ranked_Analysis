@@ -63,7 +63,7 @@ KIND_WEIGHT = {
 EFFECT_CAP = 8.0            # one huge outlier shouldn't bury everything else
 MIN_CONFIDENCE = 0.80       # below this a finding is dropped (listed under "check before you say it")
 STORY_CONFIDENCE = 0.95     # findings between MIN and this are listed as "maybe mention", not animated
-BUILD_S, HOLD_S, BEAT_S = 3.5, 1.5, 4.0     # animate.py timing per clip
+BUILD_S, HOLD_S, BEAT_S = 5.25, 1.5, 4.0    # animate.py timing per clip (build 50% slower than before)
 CLASSES = ["brawler", "marksman", "assassin", "mystic"]
 CLASS_PAIRS = [("brawler", "mystic"), ("marksman", "assassin")]
 
@@ -112,7 +112,7 @@ VIDEOS["rank"] = {
     "per_card": {"rank_best_heroes": 4, "rank_worst_heroes": 4}, "default_per_card": 2,
 }
 SHORTS = 12
-COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 4.0, 26.0     # 30 s per card in the no-voiceover hero video
+COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 6.0, 24.0     # 30 s per card in the no-voiceover hero video
 
 
 def confidence_factor(c: float) -> float:
@@ -373,7 +373,7 @@ def main() -> int:
                     help="hero order in the no-voiceover all-heroes video (default: strongest first)")
     args = ap.parse_args()
 
-    data_dir = (T.PROJECT_ROOT / f"week{args.week}_analysis") if args.week else T.resolve_target_dir(args.week_dir)
+    data_dir = (T.ANALYSES_ROOT / f"week{args.week}_analysis") if args.week else T.resolve_target_dir(args.week_dir)
     if not (data_dir / "hero_winrates.csv").exists():
         print(f"No hero_winrates.csv in {data_dir}: run query_transform.py first")
         return 1
@@ -406,8 +406,11 @@ def main() -> int:
             {k: ([asdict(i) | {"score": round(score(i), 2)} for i in v] if isinstance(v, list) else v)
              for k, v in s.items()} for s in p["sections"]]} for p in videos],
          "shorts": [asdict(i) for i in shorts]}, indent=2, default=str))
-    print(f"Shorts: {len(shorts)}\nIndex: {index}\nRender a video: python animate.py {data_dir} "
-          f"--scenes {out_dir / (files[0].stem + '_scenes.csv')}")
+    print(f"Shorts: {len(shorts)}\nIndex: {index}")
+    if files:
+        print(f"Render a video: python animate.py {data_dir} --scenes {out_dir / (files[0].stem + '_scenes.csv')}")
+    else:
+        print("No video plans this time: none of the planned videos' cards were found in this folder.")
     return 0
 
 

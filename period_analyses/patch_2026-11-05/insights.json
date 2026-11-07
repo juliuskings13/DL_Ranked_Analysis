@@ -1,0 +1,2124 @@
+{
+  "videos": [
+    {
+      "key": "meta_report",
+      "title": "Weekly meta report",
+      "sections": [
+        {
+          "card": "tier_list",
+          "context": [
+            {
+              "card": "tier_list",
+              "kind": "tier_top",
+              "headline": "Graves, Paige and Haze top the tier list",
+              "detail": "Graves: 55.2% win rate in 39% of matches, banned 20%; Paige: 54.7% win rate in 39% of matches, banned 3%; Haze: 52.6% win rate in 54% of matches, banned 24%",
+              "highlight": [
+                "Graves",
+                "Paige",
+                "Haze"
+              ],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "nerf_watch",
+              "headline": "Nerf watch: Graves (GOD TIER, power +7.9)",
+              "detail": "55.2% win rate in 39% of matches, banned 20%",
+              "highlight": [
+                "Graves"
+              ],
+              "effect": 7.931818309610142,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Graves",
+              "context": false,
+              "also": [],
+              "score": 9.52
+            },
+            {
+              "card": "tier_list",
+              "kind": "nerf_watch",
+              "headline": "Nerf watch: Paige (GOD TIER, power +6.5)",
+              "detail": "54.7% win rate in 39% of matches, banned 3%",
+              "highlight": [
+                "Paige"
+              ],
+              "effect": 6.450013339625535,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Paige",
+              "context": false,
+              "also": [],
+              "score": 7.74
+            },
+            {
+              "card": "tier_list",
+              "kind": "buff_watch",
+              "headline": "Buff watch: Mina (TRASH, power -6.5)",
+              "detail": "45.0% win rate in 36% of matches, banned 4%",
+              "highlight": [
+                "Mina"
+              ],
+              "effect": 6.483146301474032,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Mina",
+              "context": false,
+              "also": [],
+              "score": 7.13
+            },
+            {
+              "card": "tier_list",
+              "kind": "nerf_watch",
+              "headline": "Nerf watch: Haze (GOD TIER, power +5.3)",
+              "detail": "52.6% win rate in 54% of matches, banned 24%",
+              "highlight": [
+                "Haze"
+              ],
+              "effect": 5.287422237326999,
+              "confidence": 0.9999999999999571,
+              "tags": [],
+              "hero": "Haze",
+              "context": false,
+              "also": [],
+              "score": 6.34
+            },
+            {
+              "card": "tier_list",
+              "kind": "buff_watch",
+              "headline": "Buff watch: Rem (TRASH, power -5.2)",
+              "detail": "44.6% win rate in 25% of matches, banned 4%",
+              "highlight": [
+                "Rem"
+              ],
+              "effect": 5.216555373663291,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Rem",
+              "context": false,
+              "also": [],
+              "score": 5.74
+            },
+            {
+              "card": "tier_list",
+              "kind": "buff_watch",
+              "headline": "Buff watch: Shiv (TRASH, power -5.1)",
+              "detail": "46.1% win rate in 36% of matches, banned 8%",
+              "highlight": [
+                "Shiv"
+              ],
+              "effect": 5.077323194714263,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Shiv",
+              "context": false,
+              "also": [],
+              "score": 5.59
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Drifter drops STRONG \u2192 BALANCED",
+              "detail": "Win rate 51.9% \u2192 50.2% at a \u00d71.7 popularity weight (in 50% of matches), so every win-rate point counts 1.7\u00d7: power +3.2 \u2192 +0.3",
+              "highlight": [
+                "Drifter"
+              ],
+              "effect": 2.882007736189962,
+              "confidence": 0.9993717224621468,
+              "tags": [],
+              "hero": "Drifter",
+              "context": false,
+              "also": [],
+              "score": 4.03
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Vindicta drops STRONG \u2192 BALANCED",
+              "detail": "Win rate 51.8% \u2192 50.5% at a \u00d71.2 popularity weight (in 35% of matches), so every win-rate point counts 1.2\u00d7: power +2.2 \u2192 +0.6",
+              "highlight": [
+                "Vindicta"
+              ],
+              "effect": 1.6115492165222243,
+              "confidence": 0.9778018831101936,
+              "tags": [],
+              "hero": "Vindicta",
+              "context": false,
+              "also": [],
+              "score": 2.11
+            }
+          ],
+          "maybe": [
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Dynamo climbs OVER \u2192 STRONG",
+              "detail": "Win rate 51.0% \u2192 52.2% at a \u00d71.0 popularity weight (in 27% of matches), so every win-rate point counts 1.0\u00d7: power +1.1 \u2192 +2.2",
+              "highlight": [
+                "Dynamo"
+              ],
+              "effect": 1.1069681673939376,
+              "confidence": 0.9406975923510393,
+              "tags": [],
+              "hero": "Dynamo",
+              "context": false,
+              "also": [],
+              "score": 1.15
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Rat King climbs BALANCED \u2192 OVER",
+              "detail": "Win rate 50.9% \u2192 51.9% at a \u00d70.9 popularity weight (in 25% of matches), so every win-rate point counts 0.9\u00d7: power +0.8 \u2192 +1.7",
+              "highlight": [
+                "Rat King"
+              ],
+              "effect": 0.9747158896885543,
+              "confidence": 0.929873557584883,
+              "tags": [],
+              "hero": "Rat King",
+              "context": false,
+              "also": [],
+              "score": 0.93
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Wraith climbs BALANCED \u2192 STRONG",
+              "detail": "Win rate 50.6% \u2192 51.2% at a \u00d71.7 popularity weight (in 50% of matches), so every win-rate point counts 1.7\u00d7: power +0.9 \u2192 +2.0",
+              "highlight": [
+                "Wraith"
+              ],
+              "effect": 1.1023359082033177,
+              "confidence": 0.8849498961423699,
+              "tags": [],
+              "hero": "Wraith",
+              "context": false,
+              "also": [],
+              "score": 0.69
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Yamato climbs UNDER \u2192 BALANCED",
+              "detail": "Win rate 48.6% \u2192 49.5% at a \u00d71.0 popularity weight (in 29% of matches), so every win-rate point counts 1.0\u00d7: power -1.5 \u2192 -0.6",
+              "highlight": [
+                "Yamato"
+              ],
+              "effect": 0.9114834492910336,
+              "confidence": 0.8973956450374695,
+              "tags": [],
+              "hero": "Yamato",
+              "context": false,
+              "also": [],
+              "score": 0.65
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Pocket climbs TRASH \u2192 WEAK",
+              "detail": "Win rate 44.8% \u2192 45.9% at a \u00d70.9 popularity weight (in 24% of matches), so every win-rate point counts 0.9\u00d7: power -4.4 \u2192 -3.6",
+              "highlight": [
+                "Pocket"
+              ],
+              "effect": 0.8108039739379485,
+              "confidence": 0.893606009919601,
+              "tags": [],
+              "hero": "Pocket",
+              "context": false,
+              "also": [],
+              "score": 0.56
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Silver climbs WEAK \u2192 UNDER",
+              "detail": "Win rate 47.7% \u2192 48.6% at a \u00d70.9 popularity weight (in 24% of matches), so every win-rate point counts 0.9\u00d7: power -2.1 \u2192 -1.3",
+              "highlight": [
+                "Silver"
+              ],
+              "effect": 0.8060980649850231,
+              "confidence": 0.8879777661144397,
+              "tags": [],
+              "hero": "Silver",
+              "context": false,
+              "also": [],
+              "score": 0.52
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Baba drops GOD TIER \u2192 STRONG",
+              "detail": "Win rate 58.8% \u2192 57.7% at a \u00d70.4 popularity weight (in 11% of matches), so every win-rate point counts 0.4\u00d7: power +4.1 \u2192 +3.4",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 0.6410799503234581,
+              "confidence": 0.8827841568504373,
+              "tags": [],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 0.39
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Abrams drops GOD TIER \u2192 STRONG",
+              "detail": "Win rate 53.2% \u2192 52.6% at a \u00d71.4 popularity weight (in 39% of matches), so every win-rate point counts 1.4\u00d7: power +4.5 \u2192 +3.6",
+              "highlight": [
+                "Abrams"
+              ],
+              "effect": 0.8385153508508147,
+              "confidence": 0.8525045038809571,
+              "tags": [],
+              "hero": "Abrams",
+              "context": false,
+              "also": [],
+              "score": 0.32
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Apollo climbs BALANCED \u2192 OVER",
+              "detail": "Win rate 50.5% \u2192 51.8% at a \u00d71.0 popularity weight (in 29% of matches), so every win-rate point counts 1.0\u00d7: power +0.4 \u2192 +1.9",
+              "highlight": [
+                "Apollo"
+              ],
+              "effect": 1.4155868091794774,
+              "confidence": 0.974602404904399,
+              "tags": [],
+              "hero": "Apollo",
+              "context": false,
+              "also": [],
+              "score": 1.82
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Seven climbs STRONG \u2192 GOD TIER",
+              "detail": "Win rate 53.1% \u2192 54.4% at a \u00d71.2 popularity weight (in 34% of matches), so every win-rate point counts 1.2\u00d7: power +3.8 \u2192 +5.3",
+              "highlight": [
+                "Seven"
+              ],
+              "effect": 1.4149658839215782,
+              "confidence": 0.9695222901018978,
+              "tags": [],
+              "hero": "Seven",
+              "context": false,
+              "also": [],
+              "score": 1.77
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Victor drops GOD TIER \u2192 STRONG",
+              "detail": "Win rate 53.5% \u2192 52.6% at a \u00d71.2 popularity weight (in 33% of matches), so every win-rate point counts 1.2\u00d7: power +4.4 \u2192 +3.1",
+              "highlight": [
+                "Victor"
+              ],
+              "effect": 1.3309949466767925,
+              "confidence": 0.9546332943363115,
+              "tags": [],
+              "hero": "Victor",
+              "context": false,
+              "also": [],
+              "score": 1.52
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Billy climbs BALANCED \u2192 OVER",
+              "detail": "Win rate 50.1% \u2192 51.2% at a \u00d71.2 popularity weight (in 33% of matches), so every win-rate point counts 1.2\u00d7: power +0.1 \u2192 +1.4",
+              "highlight": [
+                "Billy"
+              ],
+              "effect": 1.243691689385559,
+              "confidence": 0.952782056650264,
+              "tags": [],
+              "hero": "Billy",
+              "context": false,
+              "also": [],
+              "score": 1.4
+            },
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Nurse Harrow climbs UNDER \u2192 BALANCED",
+              "detail": "Win rate 47.9% \u2192 49.5% at a \u00d70.8 popularity weight (in 20% of matches), so every win-rate point counts 0.8\u00d7: power -1.4 \u2192 -0.4",
+              "highlight": [
+                "Nurse Harrow"
+              ],
+              "effect": 1.0577154552125907,
+              "confidence": 0.9520408704170319,
+              "tags": [],
+              "hero": "Nurse Harrow",
+              "context": false,
+              "also": [],
+              "score": 1.18
+            }
+          ],
+          "dropped": [
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Viscous drops UNDER \u2192 WEAK",
+              "detail": "Win rate 46.7% \u2192 46.4% at a \u00d70.6 popularity weight (in 15% of matches), so every win-rate point counts 0.6\u00d7: power -1.9 \u2192 -2.1",
+              "highlight": [
+                "Viscous"
+              ],
+              "effect": 0.1506665637042086,
+              "confidence": 0.6076870698810866,
+              "tags": [],
+              "hero": "Viscous",
+              "context": false,
+              "also": [],
+              "score": 0.0
+            }
+          ]
+        },
+        {
+          "card": "hero_movers",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_movers",
+              "kind": "mover",
+              "headline": "McGinnis up 2.0 pts to 51.2% (still BALANCED)",
+              "detail": "49.2% the 1.6 days before \u2192 51.2% now, in 15% of matches",
+              "highlight": [
+                "McGinnis"
+              ],
+              "effect": 2.0242910865168384,
+              "confidence": 0.9852081308707074,
+              "tags": [],
+              "hero": "McGinnis",
+              "context": false,
+              "also": [],
+              "score": 1.97
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "pick_rate_winrate_scatter",
+          "context": [
+            {
+              "card": "pick_rate_winrate_scatter",
+              "kind": "balanced_zone",
+              "headline": "5 of 44 heroes sit in the balanced zone",
+              "detail": "49\u201351% win rate and a typical pick rate (19\u201336%)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "pick_rate_winrate_scatter",
+              "kind": "hidden_gem",
+              "headline": "Hidden gem: Baba wins 57.7% in 8% of matches",
+              "detail": "one of the least-picked heroes, yet clearly above 50%",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 7.689999999999998,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 6.92
+            },
+            {
+              "card": "pick_rate_winrate_scatter",
+              "kind": "popular_trap",
+              "headline": "Popular trap: Venator wins 46.5% in 40% of matches",
+              "detail": "one of the most-picked heroes, yet clearly below 50%",
+              "highlight": [
+                "Venator"
+              ],
+              "effect": 3.490000000000002,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Venator",
+              "context": false,
+              "also": [],
+              "score": 3.49
+            },
+            {
+              "card": "pick_rate_winrate_scatter",
+              "kind": "hidden_gem",
+              "headline": "Hidden gem: Deadman Danny wins 53.2% in 18% of matches",
+              "detail": "one of the least-picked heroes, yet clearly above 50%",
+              "highlight": [
+                "Deadman Danny"
+              ],
+              "effect": 3.1799999999999997,
+              "confidence": 0.9999998882321917,
+              "tags": [],
+              "hero": "Deadman Danny",
+              "context": false,
+              "also": [],
+              "score": 2.86
+            }
+          ],
+          "maybe": [
+            {
+              "card": "pick_rate_winrate_scatter",
+              "kind": "popular_trap",
+              "headline": "Popular trap: Mina wins 45.0% in 36% of matches",
+              "detail": "one of the most-picked heroes, yet clearly below 50%",
+              "highlight": [
+                "Mina"
+              ],
+              "effect": 4.979999999999997,
+              "confidence": 1.0,
+              "tags": [
+                "already covered on `tier_list`"
+              ],
+              "hero": "Mina",
+              "context": false,
+              "also": [],
+              "score": 4.98
+            }
+          ],
+          "dropped": []
+        },
+        {
+          "card": "deadlock_balance_chart",
+          "context": [
+            {
+              "card": "deadlock_balance_chart",
+              "kind": "balance",
+              "headline": "19 of 44 heroes are balanced",
+              "detail": "Inside the 47.7\u201352.3% range that chance alone would produce; 25 are imbalanced for real",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_winrates_top_bottom",
+          "context": [
+            {
+              "card": "hero_winrates_top_bottom",
+              "kind": "top_bottom",
+              "headline": "Baba has the best win rate (57.7%), Mirage the worst (41.0%)",
+              "detail": "",
+              "highlight": [
+                "Baba",
+                "Mirage"
+              ],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": []
+        }
+      ]
+    },
+    {
+      "key": "when_heroes_win",
+      "title": "When heroes win: game length",
+      "sections": [
+        {
+          "card": "match_duration",
+          "context": [
+            {
+              "card": "match_duration",
+              "kind": "duration",
+              "headline": "Half of all games last 31\u201340 minutes (median 35.5)",
+              "detail": "18% end before 30 min, 10% go past 45 min",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_early_vs_late",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_early_vs_late",
+              "kind": "late_scaler",
+              "headline": "Mirage gets stronger the longer games go: 36.9% before 35:30, 44.6% after",
+              "detail": "7.6-point swing between short and long games",
+              "highlight": [
+                "Mirage"
+              ],
+              "effect": 7.62489714605622,
+              "confidence": 0.9999996992332789,
+              "tags": [],
+              "hero": "Mirage",
+              "context": false,
+              "also": [],
+              "score": 6.86
+            },
+            {
+              "card": "hero_early_vs_late",
+              "kind": "early_hero",
+              "headline": "Apollo falls off the longer games go: 54.0% before 35:30, 49.2% after",
+              "detail": "4.8-point swing between short and long games",
+              "highlight": [
+                "Apollo"
+              ],
+              "effect": 4.75629308286512,
+              "confidence": 0.9999971119246656,
+              "tags": [],
+              "hero": "Apollo",
+              "context": false,
+              "also": [],
+              "score": 3.81
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_winrate_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_winrate_brawler",
+              "kind": "class_late_best",
+              "headline": "Best brawler in long games: Victor at 54.4%",
+              "detail": "games longer than 35:30; 50.8% in shorter ones",
+              "highlight": [
+                "Victor"
+              ],
+              "effect": 4.397036971076915,
+              "confidence": 0.9999999999902787,
+              "tags": [],
+              "hero": "Victor",
+              "context": false,
+              "also": [],
+              "score": 2.64
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_scaling_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_brawler",
+              "kind": "class_early",
+              "headline": "Warden fades the most of the brawlers: -4.5 pts after 35:30",
+              "detail": "51.9% before, 47.4% after",
+              "highlight": [
+                "Warden"
+              ],
+              "effect": 4.532231639308556,
+              "confidence": 0.9999462781301014,
+              "tags": [],
+              "hero": "Warden",
+              "context": false,
+              "also": [],
+              "score": 3.63
+            },
+            {
+              "card": "hero_duration_scaling_brawler",
+              "kind": "class_late",
+              "headline": "Viscous scales hardest of the brawlers: +3.8 pts after 35:30",
+              "detail": "44.4% before, 48.2% after",
+              "highlight": [
+                "Viscous"
+              ],
+              "effect": 3.755442432574881,
+              "confidence": 0.9968385127630914,
+              "tags": [],
+              "hero": "Viscous",
+              "context": false,
+              "also": [],
+              "score": 3.0
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_winrate_marksman",
+          "context": [],
+          "stories": [],
+          "maybe": [
+            {
+              "card": "hero_duration_winrate_marksman",
+              "kind": "class_late_best",
+              "headline": "Best marksman in long games: Deadman Danny at 51.0%",
+              "detail": "games longer than 35:30; 55.7% in shorter ones",
+              "highlight": [
+                "Deadman Danny"
+              ],
+              "effect": 0.987500089906078,
+              "confidence": 0.8746318759923765,
+              "tags": [],
+              "hero": "Deadman Danny",
+              "context": false,
+              "also": [],
+              "score": 0.23
+            }
+          ],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_scaling_marksman",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_marksman",
+              "kind": "class_early",
+              "headline": "Deadman Danny fades the most of the marksmen: -4.7 pts after 35:30",
+              "detail": "55.7% before, 51.0% after",
+              "highlight": [
+                "Deadman Danny"
+              ],
+              "effect": 4.715571505896058,
+              "confidence": 0.9999356102172039,
+              "tags": [],
+              "hero": "Deadman Danny",
+              "context": false,
+              "also": [],
+              "score": 3.77
+            },
+            {
+              "card": "hero_duration_scaling_marksman",
+              "kind": "class_late",
+              "headline": "Paradox scales hardest of the marksmen: +2.7 pts after 35:30",
+              "detail": "45.5% before, 48.2% after",
+              "highlight": [
+                "Paradox"
+              ],
+              "effect": 2.747669933234569,
+              "confidence": 0.9988664862758969,
+              "tags": [],
+              "hero": "Paradox",
+              "context": false,
+              "also": [],
+              "score": 2.2
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_winrate_assassin",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_winrate_assassin",
+              "kind": "class_late_best",
+              "headline": "Best assassin in long games: Haze at 53.8%",
+              "detail": "games longer than 35:30; 51.5% in shorter ones",
+              "highlight": [
+                "Haze"
+              ],
+              "effect": 3.8399837481318286,
+              "confidence": 0.9999999999999909,
+              "tags": [],
+              "hero": "Haze",
+              "context": false,
+              "also": [],
+              "score": 2.3
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_scaling_assassin",
+          "context": [],
+          "stories": [],
+          "maybe": [
+            {
+              "card": "hero_duration_scaling_assassin",
+              "kind": "class_late",
+              "headline": "Mirage scales hardest of the assassins: +7.6 pts after 35:30",
+              "detail": "36.9% before, 44.6% after",
+              "highlight": [
+                "Mirage"
+              ],
+              "effect": 7.62489714605622,
+              "confidence": 0.9999996992332789,
+              "tags": [
+                "already covered on `hero_early_vs_late`"
+              ],
+              "hero": "Mirage",
+              "context": false,
+              "also": [],
+              "score": 6.1
+            },
+            {
+              "card": "hero_duration_scaling_assassin",
+              "kind": "class_early",
+              "headline": "Apollo fades the most of the assassins: -4.8 pts after 35:30",
+              "detail": "54.0% before, 49.2% after",
+              "highlight": [
+                "Apollo"
+              ],
+              "effect": 4.75629308286512,
+              "confidence": 0.9999971119246656,
+              "tags": [
+                "already covered on `hero_early_vs_late`"
+              ],
+              "hero": "Apollo",
+              "context": false,
+              "also": [],
+              "score": 3.81
+            }
+          ],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_winrate_mystic",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_winrate_mystic",
+              "kind": "class_late_best",
+              "headline": "Best mystic in long games: Baba at 55.2%",
+              "detail": "games longer than 35:30; 59.9% in shorter ones",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 5.19654133624946,
+              "confidence": 0.999956057328174,
+              "tags": [],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 3.12
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_scaling_mystic",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_mystic",
+              "kind": "class_late",
+              "headline": "Grey Talon scales hardest of the mystics: +6.8 pts after 35:30",
+              "detail": "43.1% before, 49.9% after",
+              "highlight": [
+                "Grey Talon"
+              ],
+              "effect": 6.797753796180423,
+              "confidence": 0.9999999995424128,
+              "tags": [],
+              "hero": "Grey Talon",
+              "context": false,
+              "also": [],
+              "score": 5.44
+            }
+          ],
+          "maybe": [
+            {
+              "card": "hero_duration_scaling_mystic",
+              "kind": "class_early",
+              "headline": "Baba fades the most of the mystics: -4.7 pts after 35:30",
+              "detail": "59.9% before, 55.2% after",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 4.7437151029544395,
+              "confidence": 0.9959772752449829,
+              "tags": [
+                "already covered on `hero_duration_winrate_mystic`"
+              ],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 3.79
+            }
+          ],
+          "dropped": []
+        }
+      ]
+    },
+    {
+      "key": "classes_a",
+      "title": "Class deep dive: brawlers & mystics",
+      "sections": [
+        {
+          "card": "tier_list",
+          "context": [
+            {
+              "card": "tier_list",
+              "kind": "class_intro",
+              "headline": "Where the brawlers sit on the tier list",
+              "detail": "",
+              "highlight": [
+                "Abrams",
+                "Victor",
+                "Rat King",
+                "Billy",
+                "Warden",
+                "Silver",
+                "Bebop",
+                "Mo & Krill",
+                "Viscous",
+                "Shiv"
+              ],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            },
+            {
+              "card": "tier_list",
+              "kind": "class_intro",
+              "headline": "Where the mystics sit on the tier list",
+              "detail": "",
+              "highlight": [
+                "Baba",
+                "Graves",
+                "Seven",
+                "Lady Geist",
+                "McGinnis",
+                "Solomon",
+                "Celeste",
+                "Infernus",
+                "Grey Talon",
+                "Sinclair",
+                "The Doorman",
+                "Mina",
+                "Violet"
+              ],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_winrates_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_winrates_brawler",
+              "kind": "class_worst",
+              "headline": "Worst of the brawlers: Shiv at 46.1%",
+              "detail": "in 36% of matches",
+              "highlight": [
+                "Shiv"
+              ],
+              "effect": 3.8500000000000014,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Shiv",
+              "context": false,
+              "also": [],
+              "score": 3.08
+            },
+            {
+              "card": "hero_winrates_brawler",
+              "kind": "class_best",
+              "headline": "Best of the brawlers: Abrams at 52.6%",
+              "detail": "in 39% of matches",
+              "highlight": [
+                "Abrams"
+              ],
+              "effect": 2.6400000000000006,
+              "confidence": 0.999999999890529,
+              "tags": [],
+              "hero": "Abrams",
+              "context": false,
+              "also": [],
+              "score": 2.11
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "archetype_count_matrix_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "archetype_count_matrix_brawler",
+              "kind": "class_count",
+              "headline": "3 brawlers vs 1: 44.5% win rate",
+              "detail": "2,539 matches; 95% range 42.5\u201346.4%",
+              "highlight": [],
+              "effect": 5.530000000000001,
+              "confidence": 0.9999999874781543,
+              "tags": [],
+              "hero": null,
+              "context": false,
+              "also": [],
+              "score": 3.32
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_winrate_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_winrate_brawler",
+              "kind": "class_late_best",
+              "headline": "Best brawler in long games: Victor at 54.4%",
+              "detail": "games longer than 35:30; 50.8% in shorter ones",
+              "highlight": [
+                "Victor"
+              ],
+              "effect": 4.397036971076915,
+              "confidence": 0.9999999999902787,
+              "tags": [],
+              "hero": "Victor",
+              "context": false,
+              "also": [],
+              "score": 2.64
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_scaling_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_brawler",
+              "kind": "class_early",
+              "headline": "Warden fades the most of the brawlers: -4.5 pts after 35:30",
+              "detail": "51.9% before, 47.4% after",
+              "highlight": [
+                "Warden"
+              ],
+              "effect": 4.532231639308556,
+              "confidence": 0.9999462781301014,
+              "tags": [],
+              "hero": "Warden",
+              "context": false,
+              "also": [],
+              "score": 3.63
+            },
+            {
+              "card": "hero_duration_scaling_brawler",
+              "kind": "class_late",
+              "headline": "Viscous scales hardest of the brawlers: +3.8 pts after 35:30",
+              "detail": "44.4% before, 48.2% after",
+              "highlight": [
+                "Viscous"
+              ],
+              "effect": 3.755442432574881,
+              "confidence": 0.9968385127630914,
+              "tags": [],
+              "hero": "Viscous",
+              "context": false,
+              "also": [],
+              "score": 3.0
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_winrates_mystic",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_winrates_mystic",
+              "kind": "class_best",
+              "headline": "Best of the mystics: Baba at 57.7%",
+              "detail": "in 8% of matches",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 7.689999999999998,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 6.15
+            },
+            {
+              "card": "hero_winrates_mystic",
+              "kind": "class_worst",
+              "headline": "Worst of the mystics: Violet at 44.9%",
+              "detail": "in 13% of matches",
+              "highlight": [
+                "Violet"
+              ],
+              "effect": 5.140000000000001,
+              "confidence": 0.9999999999998375,
+              "tags": [],
+              "hero": "Violet",
+              "context": false,
+              "also": [],
+              "score": 4.11
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "archetype_count_matrix_mystic",
+          "context": [],
+          "stories": [
+            {
+              "card": "archetype_count_matrix_mystic",
+              "kind": "class_count",
+              "headline": "3 mystics vs 1: 48.1% win rate",
+              "detail": "3,639 matches; 95% range 46.5\u201349.8%",
+              "highlight": [],
+              "effect": 1.8500000000000014,
+              "confidence": 0.9871922742384047,
+              "tags": [],
+              "hero": null,
+              "context": false,
+              "also": [],
+              "score": 1.09
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_winrate_mystic",
+          "context": [],
+          "stories": [],
+          "maybe": [
+            {
+              "card": "hero_duration_winrate_mystic",
+              "kind": "class_late_best",
+              "headline": "Best mystic in long games: Baba at 55.2%",
+              "detail": "games longer than 35:30; 59.9% in shorter ones",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 5.19654133624946,
+              "confidence": 0.999956057328174,
+              "tags": [
+                "already covered on `hero_winrates_mystic`"
+              ],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 3.12
+            }
+          ],
+          "dropped": []
+        },
+        {
+          "card": "hero_duration_scaling_mystic",
+          "context": [],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_mystic",
+              "kind": "class_late",
+              "headline": "Grey Talon scales hardest of the mystics: +6.8 pts after 35:30",
+              "detail": "43.1% before, 49.9% after",
+              "highlight": [
+                "Grey Talon"
+              ],
+              "effect": 6.797753796180423,
+              "confidence": 0.9999999995424128,
+              "tags": [],
+              "hero": "Grey Talon",
+              "context": false,
+              "also": [],
+              "score": 5.44
+            }
+          ],
+          "maybe": [
+            {
+              "card": "hero_duration_scaling_mystic",
+              "kind": "class_early",
+              "headline": "Baba fades the most of the mystics: -4.7 pts after 35:30",
+              "detail": "59.9% before, 55.2% after",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 4.7437151029544395,
+              "confidence": 0.9959772752449829,
+              "tags": [
+                "already covered on `hero_winrates_mystic`"
+              ],
+              "hero": "Baba",
+              "context": false,
+              "also": [],
+              "score": 3.79
+            }
+          ],
+          "dropped": []
+        }
+      ]
+    },
+    {
+      "key": "rank",
+      "title": "Performance by rank",
+      "sections": [
+        {
+          "card": "rank_best_heroes",
+          "context": [
+            {
+              "card": "rank_best_heroes",
+              "kind": "rank_best_everywhere",
+              "headline": "Graves, Lady Geist, Seven are top 6 at every rank",
+              "detail": "",
+              "highlight": [
+                "Graves",
+                "Lady Geist",
+                "Seven"
+              ],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "rank_best_heroes",
+              "kind": "rank_best",
+              "headline": "Best hero in Mystic\u2013Emissary: Baba at 58.7%",
+              "detail": "1,080 games, in 8% of that bracket's matches",
+              "highlight": [
+                "Baba"
+              ],
+              "effect": 8.703703703703702,
+              "confidence": 0.9999999946943796,
+              "tags": [],
+              "hero": "Baba",
+              "context": false,
+              "also": [
+                "Best hero in Oracle\u2013Eternus: Baba at 58.4% (1,016 games, in 13% of that bracket's matches)"
+              ],
+              "score": 5.6
+            },
+            {
+              "card": "rank_best_heroes",
+              "kind": "rank_best",
+              "headline": "Best hero in Initiate\u2013Seeker: Seven at 56.4%",
+              "detail": "1,434 games, in 43% of that bracket's matches",
+              "highlight": [
+                "Seven"
+              ],
+              "effect": 6.415620641562057,
+              "confidence": 0.9999994099776034,
+              "tags": [],
+              "hero": "Seven",
+              "context": false,
+              "also": [],
+              "score": 4.49
+            },
+            {
+              "card": "rank_best_heroes",
+              "kind": "rank_best",
+              "headline": "Best hero in Acolyte\u2013Sentinel: Graves at 55.4%",
+              "detail": "5,555 games, in 45% of that bracket's matches",
+              "highlight": [
+                "Graves"
+              ],
+              "effect": 5.373537353735372,
+              "confidence": 0.9999999999999994,
+              "tags": [],
+              "hero": "Graves",
+              "context": false,
+              "also": [],
+              "score": 3.76
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "rank_worst_heroes",
+          "context": [],
+          "stories": [
+            {
+              "card": "rank_worst_heroes",
+              "kind": "rank_worst",
+              "headline": "Worst hero in Acolyte\u2013Sentinel: Mirage at 41.3%",
+              "detail": "1,307 games, in 11% of that bracket's matches",
+              "highlight": [
+                "Mirage"
+              ],
+              "effect": 8.684009181331291,
+              "confidence": 0.9999999998295829,
+              "tags": [],
+              "hero": "Mirage",
+              "context": false,
+              "also": [
+                "Worst hero in Mystic\u2013Emissary: Mirage at 40.2% (1,563 games, in 11% of that bracket's matches)"
+              ],
+              "score": 5.6
+            },
+            {
+              "card": "rank_worst_heroes",
+              "kind": "rank_worst",
+              "headline": "Worst hero in Oracle\u2013Eternus: Violet at 42.5%",
+              "detail": "1,060 games, in 13% of that bracket's matches",
+              "highlight": [
+                "Violet"
+              ],
+              "effect": 7.452830188679243,
+              "confidence": 0.9999993917511709,
+              "tags": [],
+              "hero": "Violet",
+              "context": false,
+              "also": [],
+              "score": 5.22
+            },
+            {
+              "card": "rank_worst_heroes",
+              "kind": "rank_worst",
+              "headline": "Worst hero in Initiate\u2013Seeker: Mina at 43.7%",
+              "detail": "1,276 games, in 38% of that bracket's matches",
+              "highlight": [
+                "Mina"
+              ],
+              "effect": 6.3479623824451465,
+              "confidence": 0.9999971215901908,
+              "tags": [],
+              "hero": "Mina",
+              "context": false,
+              "also": [],
+              "score": 4.44
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "rank_curve_brawler",
+          "context": [],
+          "stories": [
+            {
+              "card": "rank_curve_brawler",
+              "kind": "class_rank",
+              "headline": "Of the brawlers, Rat King loses the most going up the ranks: -7.3 pts",
+              "detail": "52.8% at Initiate, 38.9% at Eternus (36 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Rat King"
+              ],
+              "effect": 7.309080958371787,
+              "confidence": 0.9888339738095688,
+              "tags": [],
+              "hero": "Rat King",
+              "context": false,
+              "also": [],
+              "score": 6.54
+            }
+          ],
+          "maybe": [
+            {
+              "card": "rank_curve_brawler",
+              "kind": "class_rank",
+              "headline": "Of the brawlers, Silver gains the most going up the ranks: +2.7 pts",
+              "detail": "49.2% at Initiate, 54.8% at Eternus (62 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Silver"
+              ],
+              "effect": 2.7120304534422175,
+              "confidence": 0.8230719862202395,
+              "tags": [],
+              "hero": "Silver",
+              "context": false,
+              "also": [],
+              "score": 0.3
+            }
+          ],
+          "dropped": []
+        },
+        {
+          "card": "rank_curve_marksman",
+          "context": [],
+          "stories": [
+            {
+              "card": "rank_curve_marksman",
+              "kind": "class_rank",
+              "headline": "Of the marksmen, Deadman Danny loses the most going up the ranks: -7.0 pts",
+              "detail": "50.8% at Initiate, 38.0% at Eternus (50 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Deadman Danny"
+              ],
+              "effect": 7.048699844535712,
+              "confidence": 0.9889113946613552,
+              "tags": [],
+              "hero": "Deadman Danny",
+              "context": false,
+              "also": [],
+              "score": 6.31
+            },
+            {
+              "card": "rank_curve_marksman",
+              "kind": "class_rank",
+              "headline": "Of the marksmen, Holliday gains the most going up the ranks: +6.2 pts",
+              "detail": "47.2% at Initiate, 55.4% at Eternus (74 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Holliday"
+              ],
+              "effect": 6.193362982813092,
+              "confidence": 0.9908512784320114,
+              "tags": [],
+              "hero": "Holliday",
+              "context": false,
+              "also": [],
+              "score": 5.57
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "rank_curve_assassin",
+          "context": [],
+          "stories": [
+            {
+              "card": "rank_curve_assassin",
+              "kind": "class_rank",
+              "headline": "Of the assassins, Vyper gains the most going up the ranks: +7.9 pts",
+              "detail": "42.8% at Initiate, 51.9% at Eternus (52 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Vyper"
+              ],
+              "effect": 7.898127363587641,
+              "confidence": 0.9927724609167674,
+              "tags": [],
+              "hero": "Vyper",
+              "context": false,
+              "also": [],
+              "score": 7.11
+            },
+            {
+              "card": "rank_curve_assassin",
+              "kind": "class_rank",
+              "headline": "Of the assassins, Haze loses the most going up the ranks: -3.7 pts",
+              "detail": "54.6% at Initiate, 48.5% at Eternus (167 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Haze"
+              ],
+              "effect": 3.718452452984593,
+              "confidence": 0.9653764389442577,
+              "tags": [],
+              "hero": "Haze",
+              "context": false,
+              "also": [],
+              "score": 2.91
+            }
+          ],
+          "maybe": [],
+          "dropped": []
+        },
+        {
+          "card": "rank_curve_mystic",
+          "context": [],
+          "stories": [
+            {
+              "card": "rank_curve_mystic",
+              "kind": "class_rank",
+              "headline": "Of the mystics, Celeste gains the most going up the ranks: +8.2 pts",
+              "detail": "46.0% at Initiate, 56.3% at Eternus (71 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Celeste"
+              ],
+              "effect": 8.169002728747927,
+              "confidence": 0.9985821412065439,
+              "tags": [],
+              "hero": "Celeste",
+              "context": false,
+              "also": [],
+              "score": 7.2
+            }
+          ],
+          "maybe": [
+            {
+              "card": "rank_curve_mystic",
+              "kind": "class_rank",
+              "headline": "Of the mystics, Graves loses the most going up the ranks: -4.7 pts",
+              "detail": "56.5% at Initiate, 47.7% at Eternus (44 games); net leans on neighbouring ranks where a rank has few games",
+              "highlight": [
+                "Graves"
+              ],
+              "effect": 4.734384423945443,
+              "confidence": 0.970107115702316,
+              "tags": [
+                "already covered on `rank_best_heroes`"
+              ],
+              "hero": "Graves",
+              "context": false,
+              "also": [],
+              "score": 3.81
+            }
+          ],
+          "dropped": []
+        }
+      ]
+    },
+    {
+      "key": "heroes_1",
+      "title": "Hero spotlights, group 1 of 4",
+      "sections": [
+        {
+          "card": "hero_paige",
+          "context": [
+            {
+              "card": "hero_paige",
+              "kind": "hero_profile",
+              "headline": "Paige: GOD TIER, #2 of 44",
+              "detail": "54.7% win rate in 39% of matches; banned in 3%; best partner Deadman Danny (+2.0 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "nerf_watch",
+              "headline": "Nerf watch: Paige (GOD TIER, power +6.5)",
+              "detail": "54.7% win rate in 39% of matches, banned 3%",
+              "highlight": [
+                "Paige"
+              ],
+              "effect": 6.450013339625535,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Paige",
+              "context": false,
+              "also": [],
+              "score": 7.74
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_kelvin",
+          "context": [
+            {
+              "card": "hero_kelvin",
+              "kind": "hero_profile",
+              "headline": "Kelvin: GOD TIER, #5 of 44",
+              "detail": "55.1% win rate in 20% of matches; banned in 8%; best partner Lash (+1.6 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_lash",
+          "context": [
+            {
+              "card": "hero_lash",
+              "kind": "hero_profile",
+              "headline": "Lash: STRONG, #12 of 44",
+              "detail": "51.6% win rate in 45% of matches; banned in 11%; best partner Kelvin (+1.6 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_dynamo",
+          "context": [
+            {
+              "card": "hero_dynamo",
+              "kind": "hero_profile",
+              "headline": "Dynamo: STRONG, #13 of 44",
+              "detail": "52.2% win rate in 26% of matches; banned in 7%; best partner Haze (+2.4 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Dynamo climbs OVER \u2192 STRONG",
+              "detail": "Win rate 51.0% \u2192 52.2% at a \u00d71.0 popularity weight (in 27% of matches), so every win-rate point counts 1.0\u00d7: power +1.1 \u2192 +2.2",
+              "highlight": [
+                "Dynamo"
+              ],
+              "effect": 1.1069681673939376,
+              "confidence": 0.9406975923510393,
+              "tags": [],
+              "hero": "Dynamo",
+              "context": false,
+              "also": [],
+              "score": 1.15
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_apollo",
+          "context": [
+            {
+              "card": "hero_apollo",
+              "kind": "hero_profile",
+              "headline": "Apollo: OVER, #15 of 44",
+              "detail": "51.8% win rate in 25% of matches; banned in 17%; best partner Graves (+1.2 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_assassin",
+              "kind": "class_early",
+              "headline": "Apollo fades the most of the assassins: -4.8 pts after 35:30",
+              "detail": "54.0% before, 49.2% after",
+              "highlight": [
+                "Apollo"
+              ],
+              "effect": 4.75629308286512,
+              "confidence": 0.9999971119246656,
+              "tags": [],
+              "hero": "Apollo",
+              "context": false,
+              "also": [
+                "Apollo falls off the longer games go: 54.0% before 35:30, 49.2% after (4.8-point swing between short and long games)",
+                "Apollo climbs BALANCED \u2192 OVER (Win rate 50.5% \u2192 51.8% at a \u00d71.0 popularity weight (in 29% of matches), so every win-rate point counts 1.0\u00d7: power +0.4 \u2192 +1.9)"
+              ],
+              "score": 3.81
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_vindicta",
+          "context": [
+            {
+              "card": "hero_vindicta",
+              "kind": "hero_profile",
+              "headline": "Vindicta: BALANCED, #19 of 44",
+              "detail": "50.5% win rate in 31% of matches; banned in 15%; gets better at higher ranks (+4.5 pts Initiate to Eternus); best partner Victor (+1.2 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Vindicta drops STRONG \u2192 BALANCED",
+              "detail": "Win rate 51.8% \u2192 50.5% at a \u00d71.2 popularity weight (in 35% of matches), so every win-rate point counts 1.2\u00d7: power +2.2 \u2192 +0.6",
+              "highlight": [
+                "Vindicta"
+              ],
+              "effect": 1.6115492165222243,
+              "confidence": 0.9778018831101936,
+              "tags": [],
+              "hero": "Vindicta",
+              "context": false,
+              "also": [],
+              "score": 2.11
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_solomon",
+          "context": [
+            {
+              "card": "hero_solomon",
+              "kind": "hero_profile",
+              "headline": "Solomon: BALANCED, #23 of 44",
+              "detail": "50.0% win rate in 8% of matches; banned in 4%; gets better at higher ranks (+5.0 pts Initiate to Eternus)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_yamato",
+          "context": [
+            {
+              "card": "hero_yamato",
+              "kind": "hero_profile",
+              "headline": "Yamato: BALANCED, #27 of 44",
+              "detail": "49.5% win rate in 27% of matches; banned in 7%; gets better at higher ranks (+6.6 pts Initiate to Eternus); best partner Billy (+1.5 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Yamato climbs UNDER \u2192 BALANCED",
+              "detail": "Win rate 48.6% \u2192 49.5% at a \u00d71.0 popularity weight (in 29% of matches), so every win-rate point counts 1.0\u00d7: power -1.5 \u2192 -0.6",
+              "highlight": [
+                "Yamato"
+              ],
+              "effect": 0.9114834492910336,
+              "confidence": 0.8973956450374695,
+              "tags": [],
+              "hero": "Yamato",
+              "context": false,
+              "also": [],
+              "score": 0.65
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_silver",
+          "context": [
+            {
+              "card": "hero_silver",
+              "kind": "hero_profile",
+              "headline": "Silver: UNDER, #28 of 44",
+              "detail": "48.6% win rate in 23% of matches; banned in 4%; gets better at higher ranks (+2.7 pts Initiate to Eternus); best partner Paige (+1.5 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "tier_change",
+              "headline": "Silver climbs WEAK \u2192 UNDER",
+              "detail": "Win rate 47.7% \u2192 48.6% at a \u00d70.9 popularity weight (in 24% of matches), so every win-rate point counts 0.9\u00d7: power -2.1 \u2192 -1.3",
+              "highlight": [
+                "Silver"
+              ],
+              "effect": 0.8060980649850231,
+              "confidence": 0.8879777661144397,
+              "tags": [],
+              "hero": "Silver",
+              "context": false,
+              "also": [
+                "Of the brawlers, Silver gains the most going up the ranks: +2.7 pts (49.2% at Initiate, 54.8% at Eternus (62 games); net leans on neighbouring ranks where a rank has few games)"
+              ],
+              "score": 0.52
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_grey_talon",
+          "context": [
+            {
+              "card": "hero_grey_talon",
+              "kind": "hero_profile",
+              "headline": "Grey Talon: WEAK, #32 of 44",
+              "detail": "46.5% win rate in 22% of matches; banned in 2%; gets worse at higher ranks (-3.1 pts Initiate to Eternus); best partner Abrams (+1.8 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "hero_duration_scaling_mystic",
+              "kind": "class_late",
+              "headline": "Grey Talon scales hardest of the mystics: +6.8 pts after 35:30",
+              "detail": "43.1% before, 49.9% after",
+              "highlight": [
+                "Grey Talon"
+              ],
+              "effect": 6.797753796180423,
+              "confidence": 0.9999999995424128,
+              "tags": [],
+              "hero": "Grey Talon",
+              "context": false,
+              "also": [],
+              "score": 5.44
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        },
+        {
+          "card": "hero_mina",
+          "context": [
+            {
+              "card": "hero_mina",
+              "kind": "hero_profile",
+              "headline": "Mina: TRASH, #44 of 44",
+              "detail": "45.0% win rate in 36% of matches; banned in 4%; best partner Ivy (+2.4 pts)",
+              "highlight": [],
+              "effect": 0.0,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": null,
+              "context": true,
+              "also": [],
+              "score": 0.0
+            }
+          ],
+          "stories": [
+            {
+              "card": "tier_list",
+              "kind": "buff_watch",
+              "headline": "Buff watch: Mina (TRASH, power -6.5)",
+              "detail": "45.0% win rate in 36% of matches, banned 4%",
+              "highlight": [
+                "Mina"
+              ],
+              "effect": 6.483146301474032,
+              "confidence": 1.0,
+              "tags": [],
+              "hero": "Mina",
+              "context": false,
+              "also": [
+                "Popular trap: Mina wins 45.0% in 36% of matches (one of the most-picked heroes, yet clearly below 50%)",
+                "Worst hero in Initiate\u2013Seeker: Mina at 43.7% (1,276 games, in 38% of that bracket's matches)"
+              ],
+              "score": 7.13
+            }
+          ],
+          "maybe": [],
+          "dropped": [],
+          "no_highlight": true
+        }
+      ]
+    }
+  ],
+  "shorts": [
+    {
+      "card": "tier_list",
+      "kind": "nerf_watch",
+      "headline": "Nerf watch: Graves (GOD TIER, power +7.9)",
+      "detail": "55.2% win rate in 39% of matches, banned 20%",
+      "highlight": [
+        "Graves"
+      ],
+      "effect": 7.931818309610142,
+      "confidence": 1.0,
+      "tags": [],
+      "hero": "Graves",
+      "context": false,
+      "also": [
+        "Of the mystics, Graves loses the most going up the ranks: -4.7 pts (56.5% at Initiate, 47.7% at Eternus (44 games); net leans on neighbouring ranks where a rank has few games)",
+        "Best hero in Acolyte\u2013Sentinel: Graves at 55.4% (5,555 games, in 45% of that bracket's matches)"
+      ]
+    },
+    {
+      "card": "tier_list",
+      "kind": "nerf_watch",
+      "headline": "Nerf watch: Paige (GOD TIER, power +6.5)",
+      "detail": "54.7% win rate in 39% of matches, banned 3%",
+      "highlight": [
+        "Paige"
+      ],
+      "effect": 6.450013339625535,
+      "confidence": 1.0,
+      "tags": [],
+      "hero": "Paige",
+      "context": false,
+      "also": []
+    },
+    {
+      "card": "rank_curve_mystic",
+      "kind": "class_rank",
+      "headline": "Of the mystics, Celeste gains the most going up the ranks: +8.2 pts",
+      "detail": "46.0% at Initiate, 56.3% at Eternus (71 games); net leans on neighbouring ranks where a rank has few games",
+      "highlight": [
+        "Celeste"
+      ],
+      "effect": 8.169002728747927,
+      "confidence": 0.9985821412065439,
+      "tags": [],
+      "hero": "Celeste",
+      "context": false,
+      "also": []
+    },
+    {
+      "card": "tier_list",
+      "kind": "buff_watch",
+      "headline": "Buff watch: Mina (TRASH, power -6.5)",
+      "detail": "45.0% win rate in 36% of matches, banned 4%",
+      "highlight": [
+        "Mina"
+      ],
+      "effect": 6.483146301474032,
+      "confidence": 1.0,
+      "tags": [],
+      "hero": "Mina",
+      "context": false,
+      "also": [
+        "Popular trap: Mina wins 45.0% in 36% of matches (one of the most-picked heroes, yet clearly below 50%)",
+        "Worst hero in Initiate\u2013Seeker: Mina at 43.7% (1,276 games, in 38% of that bracket's matches)"
+      ]
+    },
+    {
+      "card": "rank_curve_assassin",
+      "kind": "class_rank",
+      "headline": "Of the assassins, Vyper gains the most going up the ranks: +7.9 pts",
+      "detail": "42.8% at Initiate, 51.9% at Eternus (52 games); net leans on neighbouring ranks where a rank has few games",
+      "highlight": [
+        "Vyper"
+      ],
+      "effect": 7.898127363587641,
+      "confidence": 0.9927724609167674,
+      "tags": [],
+      "hero": "Vyper",
+      "context": false,
+      "also": []
+    },
+    {
+      "card": "pick_rate_winrate_scatter",
+      "kind": "hidden_gem",
+      "headline": "Hidden gem: Baba wins 57.7% in 8% of matches",
+      "detail": "one of the least-picked heroes, yet clearly above 50%",
+      "highlight": [
+        "Baba"
+      ],
+      "effect": 7.689999999999998,
+      "confidence": 1.0,
+      "tags": [],
+      "hero": "Baba",
+      "context": false,
+      "also": [
+        "Best of the mystics: Baba at 57.7% (in 8% of matches)",
+        "Best hero in Mystic\u2013Emissary: Baba at 58.7% (1,080 games, in 8% of that bracket's matches)",
+        "Best hero in Oracle\u2013Eternus: Baba at 58.4% (1,016 games, in 13% of that bracket's matches)",
+        "Baba fades the most of the mystics: -4.7 pts after 35:30 (59.9% before, 55.2% after)",
+        "Best mystic in long games: Baba at 55.2% (games longer than 35:30; 59.9% in shorter ones)"
+      ]
+    },
+    {
+      "card": "hero_early_vs_late",
+      "kind": "late_scaler",
+      "headline": "Mirage gets stronger the longer games go: 36.9% before 35:30, 44.6% after",
+      "detail": "7.6-point swing between short and long games",
+      "highlight": [
+        "Mirage"
+      ],
+      "effect": 7.62489714605622,
+      "confidence": 0.9999996992332789,
+      "tags": [],
+      "hero": "Mirage",
+      "context": false,
+      "also": [
+        "Worst of the assassins: Mirage at 41.0% (in 11% of matches)",
+        "Mirage scales hardest of the assassins: +7.6 pts after 35:30 (36.9% before, 44.6% after)",
+        "Worst hero in Acolyte\u2013Sentinel: Mirage at 41.3% (1,307 games, in 11% of that bracket's matches)",
+        "Worst hero in Mystic\u2013Emissary: Mirage at 40.2% (1,563 games, in 11% of that bracket's matches)"
+      ]
+    },
+    {
+      "card": "rank_curve_brawler",
+      "kind": "class_rank",
+      "headline": "Of the brawlers, Rat King loses the most going up the ranks: -7.3 pts",
+      "detail": "52.8% at Initiate, 38.9% at Eternus (36 games); net leans on neighbouring ranks where a rank has few games",
+      "highlight": [
+        "Rat King"
+      ],
+      "effect": 7.309080958371787,
+      "confidence": 0.9888339738095688,
+      "tags": [],
+      "hero": "Rat King",
+      "context": false,
+      "also": []
+    },
+    {
+      "card": "tier_list",
+      "kind": "nerf_watch",
+      "headline": "Nerf watch: Haze (GOD TIER, power +5.3)",
+      "detail": "52.6% win rate in 54% of matches, banned 24%",
+      "highlight": [
+        "Haze"
+      ],
+      "effect": 5.287422237326999,
+      "confidence": 0.9999999999999571,
+      "tags": [],
+      "hero": "Haze",
+      "context": false,
+      "also": [
+        "Of the assassins, Haze loses the most going up the ranks: -3.7 pts (54.6% at Initiate, 48.5% at Eternus (167 games); net leans on neighbouring ranks where a rank has few games)",
+        "Best assassin in long games: Haze at 53.8% (games longer than 35:30; 51.5% in shorter ones)",
+        "Best of the assassins: Haze at 52.6% (in 54% of matches)"
+      ]
+    },
+    {
+      "card": "rank_curve_marksman",
+      "kind": "class_rank",
+      "headline": "Of the marksmen, Deadman Danny loses the most going up the ranks: -7.0 pts",
+      "detail": "50.8% at Initiate, 38.0% at Eternus (50 games); net leans on neighbouring ranks where a rank has few games",
+      "highlight": [
+        "Deadman Danny"
+      ],
+      "effect": 7.048699844535712,
+      "confidence": 0.9889113946613552,
+      "tags": [],
+      "hero": "Deadman Danny",
+      "context": false,
+      "also": [
+        "Deadman Danny fades the most of the marksmen: -4.7 pts after 35:30 (55.7% before, 51.0% after)",
+        "Hidden gem: Deadman Danny wins 53.2% in 18% of matches (one of the least-picked heroes, yet clearly above 50%)",
+        "Best of the marksmen: Deadman Danny at 53.2% (in 18% of matches)"
+      ]
+    },
+    {
+      "card": "tier_list",
+      "kind": "buff_watch",
+      "headline": "Buff watch: Rem (TRASH, power -5.2)",
+      "detail": "44.6% win rate in 25% of matches, banned 4%",
+      "highlight": [
+        "Rem"
+      ],
+      "effect": 5.216555373663291,
+      "confidence": 1.0,
+      "tags": [],
+      "hero": "Rem",
+      "context": false,
+      "also": []
+    },
+    {
+      "card": "tier_list",
+      "kind": "buff_watch",
+      "headline": "Buff watch: Shiv (TRASH, power -5.1)",
+      "detail": "46.1% win rate in 36% of matches, banned 8%",
+      "highlight": [
+        "Shiv"
+      ],
+      "effect": 5.077323194714263,
+      "confidence": 1.0,
+      "tags": [],
+      "hero": "Shiv",
+      "context": false,
+      "also": [
+        "Worst of the brawlers: Shiv at 46.1% (in 36% of matches)"
+      ]
+    }
+  ]
+}
