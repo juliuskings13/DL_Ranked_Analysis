@@ -112,7 +112,8 @@ VIDEOS["rank"] = {
     "per_card": {"rank_best_heroes": 4, "rank_worst_heroes": 4}, "default_per_card": 2,
 }
 SHORTS = 12
-COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 6.0, 24.0     # 30 s per card in the no-voiceover hero video
+COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 15.0, 15.0    # 30 s per card in the no-voiceover hero video
+                                                      # (hero cards build panel by panel: hero_spotlight.BUILD_S)
 
 
 def confidence_factor(c: float) -> float:

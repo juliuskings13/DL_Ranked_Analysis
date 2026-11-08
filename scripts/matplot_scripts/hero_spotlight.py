@@ -3,7 +3,8 @@ hero_spotlight.py — one 1080x1080 card per hero, for hero spotlight videos and
 
     header      hero name; tier, rank and power; big icon
     tiles       win rate, pick rate, ban rate, power, each with the change since last week
-    trend       win rate over the last 8 weeks (from the week folders next to this one), 95% range
+    trend       win rate by week (last 8 weeks; every week of a period such as a season), 95% range,
+                patches as dashed lines colored by what each did to the hero, NET first-to-last change
     game length win rate in each 5-minute bracket, against 50%
     partners    best and worst duo partners (win rate vs what their solo win rates predict)
 
@@ -36,7 +37,15 @@ PARTNERS_BEST, PARTNERS_WORST = 3, 3
 PARTNER_CONF = 0.80          # how sure the lift is real; below 95% the row is marked "could be noise"
 WORST_NEEDS_SUB50 = True     # a "worst" partner must also lose together (< 50%); False = any clear drop
 ICON_PX, TITLE_PX, SUBTITLE_PX = 136, 58, 24      # header (title and icon ~40% larger than other cards)
+NAME_ART_PX = 72             # height of the hero's name logo (assets/hero_names/), when there is one
 TIER_COLOR = {name: style[2] for name, style in T.TIER_STYLE.items()}
+
+# --- animation: everything appears in reading order --------------------------------
+BUILD_S = 15.0               # seconds the card takes to build itself (animate.py / assemble_video use it)
+P_HEADER = (0.0, 0.06)       # name, subtitle, icon (fractions of the build)
+P_TILES = (0.05, 0.22)       # the four tiles, left to right, one after another
+P_PANELS = [("trend", 0.22, 0.42), ("rank", 0.42, 0.61), ("length", 0.61, 0.80), ("partners", 0.80, 0.98)]
+PATCH_COLORS = {"buff": T.GREEN, "nerf": T.RED, "mixed": T.GOLD, "rework": T.GOLD}
 
 
 def slug(name: str) -> str:
@@ -73,7 +82,56 @@ def load_all(data_dir: Path) -> dict:
         out["duos"] = duo_prepare(data_dir)
     except FileNotFoundError:
         pass
+    out["patches"] = load_patches(data_dir)
     return out
+
+
+def _week_x(t: pd.Timestamp) -> float:
+    """A moment in time on the weekly trend's x axis: week N's point sits mid-week at x = N."""
+    launch = pd.Timestamp(T.RANKED_START_DATE, tz="UTC")
+    return (pd.Timestamp(t).tz_convert("UTC") - launch).total_seconds() / 86400 / 7 + 0.5
+
+
+def _patch_calls(folder: Path) -> dict:
+    """hero -> buff / nerf / mixed / rework from a patch-notes folder's overall.csv (your reviewed calls)."""
+    try:
+        o = pd.read_csv(folder / "overall.csv", dtype=str, keep_default_na=False)
+    except (OSError, ValueError):
+        return {}
+    if "subject" not in o.columns:
+        return {}
+    o = o[o.get("kind", "hero") == "hero"] if "kind" in o.columns else o
+    call = o["overall"].where(o.get("overall", "") != "", o.get("auto", "")) if "overall" in o.columns else o["auto"]
+    return {h: c.strip().lower() for h, c in zip(o["subject"], call) if c and c.strip()}
+
+
+def load_patches(data_dir: Path) -> list[dict]:
+    """Balance patches for the weekly trend: [{x, when, name, calls: {hero: buff|nerf|...}}].
+    Dates from the period's patches.csv export (sync_patches.py events) and from the patches/ folders
+    (patch_notes.py); the per-hero buff / nerf calls from those folders' overall.csv."""
+    events = []
+    try:
+        p = pd.read_csv(Path(data_dir) / "patches.csv", parse_dates=["start_time"])
+        for _, r in p.iterrows():
+            if r.get("kind") != "hero_release":
+                events.append({"when": pd.Timestamp(r["start_time"]), "name": r.get("name", ""), "calls": {}})
+    except (OSError, ValueError, KeyError):
+        pass
+    folders = []
+    for f in sorted((T.PROJECT_ROOT / "patches").glob("20??-??-??*")):
+        try:
+            folders.append((pd.Timestamp(f.name[:10], tz="UTC") + pd.Timedelta(hours=12), f))
+        except ValueError:
+            continue
+    for when, f in folders:
+        near = [e for e in events if abs((e["when"] - when).total_seconds()) < 1.5 * 86400]
+        if near:
+            near[0]["calls"] = _patch_calls(f)
+        else:
+            events.append({"when": when, "name": f.name, "calls": _patch_calls(f)})
+    for e in events:
+        e["x"] = _week_x(e["when"])
+    return sorted(events, key=lambda e: e["x"])
 
 
 def partners(duos: pd.DataFrame | None, hero: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -135,6 +193,13 @@ def _panel(fig, rect, title: str, alpha: float):
     return ax
 
 
+def _fade_ticks(ax, alpha: float) -> None:
+    """Tick labels and axis labels follow the panel's fade-in (matplotlib doesn't tie them to anything)."""
+    for tl in ax.get_xticklabels() + ax.get_yticklabels():
+        tl.set_alpha(alpha)
+    ax.xaxis.label.set_alpha(alpha)
+
+
 def _rank_panel(ax, hero: str, data: dict, p_line: float, p_frame: float) -> None:
     """Actual win rate at each of the 11 ranks (hollow = thin sample) and the hero's NET change,
     the same numbers as the rank_curve cards."""
@@ -155,7 +220,7 @@ def _rank_panel(ax, hero: str, data: dict, p_line: float, p_frame: float) -> Non
     xi, yi = x[ok], wr[ok]
     ax.axhline(50, color=T.TEXT_MUTED, lw=1.2, alpha=0.6 * p_frame)
     upto = p_line * (len(tiers) - 1)
-    keep = xi <= upto + 1e-9
+    keep = (xi <= upto + 1e-9) & (p_line > 0)
     xs, ys = list(xi[keep]), list(yi[keep])
     if len(xs) and upto > xs[-1] and (~keep).any():
         xs.append(upto); ys.append(float(np.interp(upto, xi, yi)))
@@ -179,24 +244,54 @@ def _rank_panel(ax, hero: str, data: dict, p_line: float, p_frame: float) -> Non
             color=T.TEXT_MUTED, fontsize=T.px_to_pt(11), alpha=p_frame)
 
 
+def _place(fig, arr: np.ndarray, x_px: float, y_top_px: float, zorder: float = 4) -> None:
+    """An image array (already at real pixels) with its top-left corner at card px (x_px, y_top_px)."""
+    fig.figimage(arr, xo=int(round(T.dev_px(x_px))), yo=int(round(T.OUT_PX - T.dev_px(y_top_px) - arr.shape[0])),
+                 origin="upper", zorder=zorder)
+
+
+def _phase(progress: float, a: float, b: float) -> float:
+    return T.ease_out_cubic(T.phase(progress, a, b))
+
+
 def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, highlight=None) -> "T.Figure":
     r = data["d"].loc[hero]
-    p_frame = T.ease_out_cubic(T.phase(progress, 0, 0.15))
-    p_line = T.ease_out_cubic(T.phase(progress, 0.15, 0.55))
-    p_bars = T.ease_out_cubic(T.phase(progress, 0.40, 0.75))
-    p_part = T.ease_out_cubic(T.phase(progress, 0.65, 0.95))
+    p_frame = _phase(progress, *P_HEADER)
+    panel = {k: (_phase(progress, a, a + 0.03), _phase(progress, a + 0.02, b)) for k, a, b in P_PANELS}
 
     fig = T.plt.figure(figsize=(T.CARD_IN, T.CARD_IN), dpi=T.DPI, facecolor=T.BG)
     tier = r["tier"]
     icon_px = ICON_PX
-    title_px = T.fit_font_px([hero.upper()], T.CARD_PX * (1 - 2 * T.MARGIN_X) - icon_px - 30, max_px=TITLE_PX, min_px=34)
-    t = fig.text(T.MARGIN_X, 0.946, hero.upper(), color=T.GOLD, fontsize=T.px_to_pt(title_px), fontweight="bold",
-                 va="center", ha="left", alpha=p_frame)
-    T._mark_header_bottom(fig, t)
-    sub = fig.text(T.MARGIN_X, 0.884, f"{tier} · #{int(r['rank'])} of {data['n_heroes']} on the tier list · "
-                                      f"power {r['power']:+.1f}", color=T.TEXT_MUTED,
-                   fontsize=T.px_to_pt(SUBTITLE_PX), va="center", ha="left", alpha=p_frame)
-    T._mark_header_bottom(fig, sub)
+    x0 = T.MARGIN_X * T.CARD_PX
+    room = T.CARD_PX * (1 - 2 * T.MARGIN_X) - icon_px - 30
+    art = T.name_art(hero, NAME_ART_PX, int(room))
+    if art is not None:                                # the hero's own name logo
+        a = art.copy()
+        a[..., 3] *= p_frame
+        h_px = a.shape[0] / T.RENDER_SCALE
+        top_px = 54 - h_px / 2                         # centered where the text title would be
+        _place(fig, a, x0 - 10, top_px)
+        fig._content_top = min(getattr(fig, "_content_top", 1.0), 1 - (top_px + h_px - 10) / T.CARD_PX)
+    else:
+        title_px = T.fit_font_px([hero.upper()], room, max_px=TITLE_PX, min_px=34)
+        t = fig.text(T.MARGIN_X, 0.946, hero.upper(), color=T.GOLD, fontsize=T.px_to_pt(title_px),
+                     fontweight="bold", va="center", ha="left", alpha=p_frame)
+        T._mark_header_bottom(fig, t)
+    # subtitle: "OVER · [#13 of 44] on the tier list · power +1.5", the tier and the placing highlighted
+    y, fs = 0.884, T.px_to_pt(SUBTITLE_PX)
+    x = T.MARGIN_X
+    tcol = TIER_COLOR.get(tier, T.TEXT)
+    parts = [(f"{tier}", dict(color=tcol, fontweight="bold")),
+             ("  ·  ", dict(color=T.TEXT_MUTED)),
+             (f"#{int(r['rank'])} of {data['n_heroes']}", dict(color=T.BG, fontweight="bold",
+                                                              bbox=dict(boxstyle="round,pad=0.28,rounding_size=0.3",
+                                                                        fc=T.GOLD, ec="none", alpha=p_frame))),
+             (f"  on the tier list  ·  power {r['power']:+.1f}", dict(color=T.TEXT_MUTED))]
+    for txt, kw in parts:
+        pad = 0.28 * SUBTITLE_PX / T.CARD_PX if "bbox" in kw else 0      # the pill's padding, each side
+        art_ = fig.text(x + pad, y, txt, fontsize=fs, va="center", ha="left", alpha=p_frame, **kw)
+        x += T.text_width_frac(fig, art_) + 2 * pad              # the measured width excludes the pill
+        T._mark_header_bottom(fig, art_)
     # big icon, top right
     icon = T.icon_any(hero, icon_px, T.archetype_color(r["hero_type"]), p_frame, wr=r["winrate"])
     iax = fig.add_axes([1 - T.MARGIN_X - icon_px / T.CARD_PX, 1 - 14 / T.CARD_PX - icon_px / T.CARD_PX,
@@ -218,29 +313,44 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
         (f"{r['power']:+.1f}", "power", TIER_COLOR.get(tier, T.TEXT),
          _fmt_delta(r["power_delta"]) if has_prev else None),
     ]
-    T.draw_kpi_row(fig, tiles, alpha=p_frame)
+    a0, a1 = P_TILES
+    step = (a1 - a0) / len(tiles)
+    T.draw_kpi_row(fig, tiles, alpha=[_phase(progress, a0 + k * step, a0 + k * step + step * 1.6)
+                                      for k in range(len(tiles))])
     T.draw_footer(fig, meta, alpha=p_frame)
 
     top = fig._content_top - 0.06
     bottom = T.FOOTER_LINE_Y + 0.05
-    left, right = T.MARGIN_X + 0.055, 1 - T.MARGIN_X
+    left, right = T.MARGIN_X + 0.038, 1 - T.MARGIN_X
     split = bottom + (top - bottom) * 0.52            # trend above, game length + partners below
 
     # --- trend (top left) and rank (top right)
-    tw = 0.44
+    tw = 0.47
     row_gap = 0.085                                   # room for the rotated rank names above the lower panels
     h = data["hist"]
+    pf, pl = panel["trend"]
     trend_title = ("WIN RATE BY WEEK" if data.get("is_period") else f"WIN RATE, LAST {TREND_WEEKS} WEEKS")
-    ax = _panel(fig, [left, split + row_gap, (right - left) * tw, top - split - row_gap], trend_title, p_frame)
+    ax = _panel(fig, [left, split + row_gap, (right - left) * tw, top - split - row_gap], trend_title, pf)
     h = h[h["hero_name"] == hero] if len(h) else h
     if len(h) >= 2:
+        h = h.sort_values("week")
         x = h["week"].to_numpy(float)                   # real week numbers: gaps stay gaps
-        ax.axhline(50, color=T.TEXT_MUTED, lw=1.2, alpha=0.6 * p_frame)
-        ax.fill_between(x, h["wr_lo"], h["wr_hi"], color=T.GOLD, alpha=0.12 * p_frame, lw=0)
-        upto = x[0] + p_line * (x[-1] - x[0])
-        k = int(np.searchsorted(x, upto, side="right"))
-        xs = list(x[:k]) + ([upto] if upto < x[-1] else [])
-        ys = list(h["winrate"].iloc[:k]) + ([np.interp(upto, x, h["winrate"])] if upto < x[-1] else [])
+        ax.axhline(50, color=T.TEXT_MUTED, lw=1.2, alpha=0.6 * pf)
+        ax.fill_between(x, h["wr_lo"], h["wr_hi"], color=T.GOLD, alpha=0.12 * pl, lw=0)
+        upto = x[0] + pl * (x[-1] - x[0])
+        # balance patches: dashed, colored by what the patch did to THIS hero; drawn as the line reaches them
+        shown = False
+        for e in data.get("patches") or []:
+            if not (x[0] - 0.5 <= e["x"] <= x[-1] + 0.5) or e["x"] > upto + 0.5 or pl <= 0:
+                continue
+            call = e["calls"].get(hero)
+            col = PATCH_COLORS.get(call or "", T.TEXT_MUTED)
+            ax.axvline(e["x"], color=col, ls=(0, (4, 3)), lw=1.8 if call else 1.0,
+                       alpha=(0.9 if call else 0.45) * pf, zorder=2)
+            shown = True
+        k = int(np.searchsorted(x, upto, side="right")) if pl > 0 else 0
+        xs = list(x[:k]) + ([upto] if upto < x[-1] and k else [])
+        ys = list(h["winrate"].iloc[:k]) + ([np.interp(upto, x, h["winrate"])] if upto < x[-1] and k else [])
         ax.plot(xs, ys, color=T.GOLD, lw=3, solid_capstyle="round", zorder=3)
         for i in range(k):
             v = h["winrate"].iloc[i]
@@ -255,19 +365,34 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
         ax.set_ylim(lo - 0.6, hi + 0.9)
         ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
         ax.set_xlim(x[0] - 0.4, x[-1] + 0.4)
+        # NET: first week to last week, colored only when the change is clearly more than noise
+        first, last = h.iloc[0], h.iloc[-1]
+        net = last["winrate"] - first["winrate"]
+        se = np.hypot((first["wr_hi"] - first["wr_lo"]) / 3.92, (last["wr_hi"] - last["wr_lo"]) / 3.92)
+        clear = abs(net) > 1.96 * se
+        col = (T.GREEN if net > 0 else T.RED) if clear else T.TEXT_MUTED
+        ax.text(1.0, 1.02, f"NET {net:+.1f} pts", transform=ax.transAxes, ha="right", va="bottom",
+                color=col, fontsize=T.px_to_pt(17), fontweight="bold", alpha=pl)
+        if shown:
+            ax.text(0.02, 0.97, "dashed = patch (green buffed, red nerfed, gold mixed)", transform=ax.transAxes,
+                    ha="left", va="top", color=T.TEXT_MUTED, fontsize=T.px_to_pt(11), alpha=pf)
     else:
         ax.axis("off")
         ax.text(0.5, 0.5, "Trend appears once earlier weeks are in the project folder", ha="center",
                 va="center", color=T.TEXT_MUTED, fontsize=T.px_to_pt(16), transform=ax.transAxes,
-                alpha=p_frame)
-    ax.grid(axis="y", color=T.GRID, alpha=p_frame)
+                alpha=pf)
+    ax.grid(axis="y", color=T.GRID, alpha=pf)
+    _fade_ticks(ax, pf)
 
-    rx0 = left + (right - left) * tw + 0.075
-    ax = _panel(fig, [rx0, split + row_gap, right - rx0, top - split - row_gap], "WIN RATE BY RANK", p_frame)
-    _rank_panel(ax, hero, data, p_line, p_frame)
+    rx0 = left + (right - left) * tw + 0.055
+    pf, pl = panel["rank"]
+    ax = _panel(fig, [rx0, split + row_gap, right - rx0, top - split - row_gap], "WIN RATE BY RANK", pf)
+    _rank_panel(ax, hero, data, pl, pf)
+    _fade_ticks(ax, pf)
 
     # --- game length
     gw = 0.54
+    p_frame, p_bars = panel["length"]
     ax = _panel(fig, [left, bottom, (right - left) * gw, split - bottom - 0.035], "WIN RATE BY GAME LENGTH", p_frame)
     dur = data["dur"]
     rows = dur[dur["hero_name"] == hero].set_index("duration_bracket") if dur is not None else pd.DataFrame()
@@ -290,6 +415,7 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
         ax.grid(axis="y", color=T.GRID, alpha=p_frame)
         ax.text(1.0, 1.02, "hatched = fewer than 150 games", transform=ax.transAxes, ha="right", va="bottom",
                 color=T.TEXT_MUTED, fontsize=T.px_to_pt(12), alpha=p_frame)
+        _fade_ticks(ax, p_frame)
     else:
         ax.axis("off")
         ax.text(0.5, 0.5, "No game-length export this week", ha="center", va="center", color=T.TEXT_MUTED,
@@ -297,6 +423,7 @@ def render(hero: str, data: dict, meta: T.ChartMeta, progress: float = 1.0, high
 
     # --- partners
     px0 = left + (right - left) * gw + 0.04
+    p_frame, p_part = panel["partners"]
     ax = _panel(fig, [px0, bottom, right - px0, split - bottom - 0.035], "BEST & WORST PARTNERS", p_frame)
     ax.axis("off")
     ax.set_xlim(0, 1)
@@ -363,8 +490,11 @@ def cards(data_dir: Path, heroes: list[str] | None = None, **_) -> dict:
     data = load_all(data_dir)
     meta = T.ChartMeta(T.week_label_from_dir(data_dir), None)
     names = heroes or list(data["d"].index)
-    return {f"hero_{slug(h)}": (lambda progress=1.0, highlight=None, h=h: render(h, data, meta, progress))
-            for h in names if h in data["d"].index}
+    out = {f"hero_{slug(h)}": (lambda progress=1.0, highlight=None, h=h: render(h, data, meta, progress))
+           for h in names if h in data["d"].index}
+    for draw in out.values():
+        draw.build_s = BUILD_S                 # header, tiles one by one, then each panel in turn
+    return out
 
 
 def main() -> None:

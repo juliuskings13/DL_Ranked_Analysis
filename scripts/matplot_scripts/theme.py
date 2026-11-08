@@ -289,11 +289,11 @@ def draw_archetype_legend(fig: Figure, y: float = HEADER_LEGEND_Y, alpha: float 
 
 
 def draw_kpi_row(fig: Figure, items: list[tuple], height_px: float | None = None,
-                 alpha: float = 1.0) -> None:
+                 alpha: float | list = 1.0) -> None:
     """Row of stat tiles directly under the header.
     items = [(value, label, color), ...] or (value, label, color, sub) for a second caption
     line (e.g. the change vs last week). Fonts are sized to the tile; content placed
-    afterwards starts below the row."""
+    afterwards starts below the row. alpha: one value, or one per tile (tiles appearing one by one)."""
     from matplotlib.patches import FancyBboxPatch
     has_sub = any(len(it) > 3 and it[3] for it in items)
     height_px = height_px or (140 if has_sub else 118)
@@ -309,10 +309,14 @@ def draw_kpi_row(fig: Figure, items: list[tuple], height_px: float | None = None
     subs = [it[3] for it in items if len(it) > 3 and it[3]]
     s_px = fit_font_px(subs, w_px * 0.88, height_px * 0.15, max_px=18, min_px=11) if subs else 0
     y_val, y_lab, y_sub = (0.34, 0.66, 0.86) if has_sub else (0.40, 0.80, None)
+    alphas = list(alpha) if isinstance(alpha, (list, tuple)) else [alpha] * n
     for k, it in enumerate(items):
         value, label, color = it[:3]
         sub = it[3] if len(it) > 3 else None
         x = MARGIN_X + k * (w + gap)
+        alpha = alphas[k]
+        if alpha <= 0:
+            continue
         fig.add_artist(FancyBboxPatch((x, top - h), w, h, boxstyle="round,pad=0,rounding_size=0.008",
                                       transform=fig.transFigure, facecolor=PANEL, edgecolor="none",
                                       alpha=alpha))

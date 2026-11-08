@@ -178,6 +178,15 @@ EXPORTS: dict[str, tuple[str, tuple[str, ...]]] = {
                SUM(total_games_played) OVER (ORDER BY sort_order DESC) AS cumulative_games_n_plus
         FROM agg ORDER BY sort_order""", ("csv",)),
 
+    # hero_spotlight: balance patches and hero releases up to the end of the period (dashed lines on the
+    # weekly trend). All of them, not just this period's: the trend reaches back several weeks.
+    "patches": ("""
+        SELECT start_time, kind, name, description
+        FROM patch_events
+        WHERE confirmed AND kind IN ('patch', 'minor_patch', 'hero_release')
+          AND start_time < COALESCE(%(end)s::timestamptz, 'infinity')
+        ORDER BY start_time""", ("csv",)),
+
     # most_freq_comps
     "top_20_freq_comps": ("""
         WITH sides AS (
