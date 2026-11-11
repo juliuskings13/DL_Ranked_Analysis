@@ -213,6 +213,25 @@ ALTER TABLE items ADD COLUMN IF NOT EXISTS hero_id    INT;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS image_url  TEXT;
 
 -- each hero's four abilities in slot order (1-3 regular, 4 = ultimate), from the assets API
+-- Objectives (ingest --with-objectives / --objectives-only)
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS boss_damage INT;      -- end-of-match objective damage
+-- more stats.* columns (--with-stats / --stats-only). player_barriering counts the hero's own shields too;
+-- teammate_barriering is allies only. creep_damage = lane creeps, neutral_damage = jungle camps.
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS teammate_barriering INT;
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS creep_damage INT;
+ALTER TABLE match_player ADD COLUMN IF NOT EXISTS neutral_damage INT;
+-- When each team lost its Tier 1 tower in each lane. lane = assigned_lane numbering (1, 4, 6).
+-- NULL = the tower was still standing at the end. Lane winner: the team that took the OTHER team's Tier 1 first.
+CREATE TABLE IF NOT EXISTS match_lanes (
+    match_id         BIGINT   NOT NULL,
+    start_time       TIMESTAMPTZ NOT NULL,
+    lane             SMALLINT NOT NULL,
+    team0_t1_lost_s  INT,
+    team1_t1_lost_s  INT,
+    PRIMARY KEY (match_id, lane)
+);
+CREATE INDEX IF NOT EXISTS match_lanes_start_time_idx ON match_lanes (start_time);
+
 CREATE TABLE IF NOT EXISTS hero_abilities (
     hero_id    INT      NOT NULL,
     slot       SMALLINT NOT NULL,

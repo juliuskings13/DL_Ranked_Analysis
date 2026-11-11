@@ -42,7 +42,7 @@ def stages(week: int | None = None, period: str | None = None) -> list[tuple[str
         return [
             ("heroes", [str(HERE / "ingest_scripts" / "hero_ingest_deadlock.py")]),
             ("assets", [str(HERE / "ingest_scripts" / "ingest_game_assets.py")]),
-            ("ingest", [str(HERE / "ingest_scripts" / "ingest_dl_comm_api_parquet.py"), *p]),
+            ("ingest", [str(HERE / "ingest_scripts" / "ingest_dl_comm_api_parquet.py"), *p, "--with-objectives"]),
             ("validate", [str(HERE / "ingest_scripts" / "validate_week.py"), *p]),
             ("transform", [str(HERE / "sql_scripts" / "query_transform.py"), *p, "--with-compare"]),
             ("charts", [str(find_script("gen_visuals.py")), "--dir", folder]),
@@ -53,7 +53,7 @@ def stages(week: int | None = None, period: str | None = None) -> list[tuple[str
     return [
         ("heroes", [str(HERE / "ingest_scripts" / "hero_ingest_deadlock.py")]),
         ("assets", [str(HERE / "ingest_scripts" / "ingest_game_assets.py")]),
-        ("ingest", [str(HERE / "ingest_scripts" / "ingest_dl_comm_api_parquet.py"), *w]),
+        ("ingest", [str(HERE / "ingest_scripts" / "ingest_dl_comm_api_parquet.py"), *w, "--with-objectives"]),
         ("validate", [str(HERE / "ingest_scripts" / "validate_week.py"), *w]),
         ("transform", [str(HERE / "sql_scripts" / "query_transform.py"), *w]),
         ("charts", [str(find_script("gen_visuals.py")), "--start-date", chart_date]),

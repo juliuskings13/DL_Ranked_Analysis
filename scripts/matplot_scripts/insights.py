@@ -112,7 +112,8 @@ VIDEOS["rank"] = {
     "per_card": {"rank_best_heroes": 4, "rank_worst_heroes": 4}, "default_per_card": 2,
 }
 SHORTS = 12
-COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 15.0, 15.0    # 30 s per card in the no-voiceover hero video
+COMPENDIUM_BUILD_S, COMPENDIUM_HOLD_S = 16.0, 14.0    # 30 s per card in the no-voiceover hero video
+COMPENDIUM_WIDE_HOLD_S = 2.5          # wide (2560x1440) compendium: hold after the ~30.5 s build -> ~33 s per hero
                                                       # (hero cards build panel by panel: hero_spotlight.BUILD_S)
 
 
@@ -345,6 +346,24 @@ def write_compendium(data_dir: Path, out_dir: Path, available: set[str], order: 
     label = T.week_label_from_dir(data_dir)
     (out_dir / "hero_compendium_chapters.txt").write_text(
         f"Every hero, {label} ({'A–Z' if order == 'alpha' else 'strongest to weakest'})\n\n" + "\n".join(chapters) + "\n")
+    # the same video at 2560x1440, from the wide cards (lanes, MVP and per-minute panels added). No tier list:
+    # every clip of one video has to be the same size to join.
+    wide = [f"hero_{HS.slug(h)}_wide" for h in heroes if f"hero_{HS.slug(h)}_wide" in available]
+    if wide:
+        per_w = HS.EXT_BUILD_S + COMPENDIUM_WIDE_HOLD_S
+        with open(out_dir / "hero_compendium_wide_scenes.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["card", "build", "hold", "highlight", "name"])
+            for k, card in enumerate(wide):
+                w.writerow([card, HS.EXT_BUILD_S, COMPENDIUM_WIDE_HOLD_S, "", f"compendium_wide_{k:02d}_{card}"])
+        lines = []
+        for k, card in enumerate(wide):
+            t = int(k * per_w)
+            stamp = f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60}:{t % 60:02d}"
+            lines.append(f"{stamp} {names[card[:-5]]}")
+        (out_dir / "hero_compendium_wide_chapters.txt").write_text(
+            f"Every hero, {label} ({'A–Z' if order == 'alpha' else 'strongest to weakest'})\n\n"
+            + "\n".join(lines) + "\n")
     return len(cards)
 
 
@@ -370,8 +389,8 @@ def main() -> int:
     ap.add_argument("--base", default=None, help="folder to compare against (default: last week)")
     ap.add_argument("--hero-groups", choices=["rotate", "all"], default="rotate",
                     help="one hero-spotlight group per week (default) or all four")
-    ap.add_argument("--compendium-order", choices=["tier", "alpha"], default="tier",
-                    help="hero order in the no-voiceover all-heroes video (default: strongest first)")
+    ap.add_argument("--compendium-order", choices=["tier", "alpha"], default="alpha",
+                    help="hero order in the all-heroes videos (default: A-Z, so viewers can find their hero)")
     args = ap.parse_args()
 
     data_dir = (T.ANALYSES_ROOT / f"week{args.week}_analysis") if args.week else T.resolve_target_dir(args.week_dir)

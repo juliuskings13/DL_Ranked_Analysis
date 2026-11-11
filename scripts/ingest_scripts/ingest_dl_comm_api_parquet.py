@@ -21,6 +21,16 @@ Usage:
     python ingest_dl_comm_api_parquet.py --week 12 --source-files ./sample/*.parquet   # offline/dev
     python ingest_dl_comm_api_parquet.py --ranks-only --weeks 1-13      # backfill only the rank columns
     python ingest_dl_comm_api_parquet.py --ranks-only --rosters-only --weeks 4-8   # ranks -> rosters, no download
+    python ingest_dl_comm_api_parquet.py --week 14 --with-objectives    # also boss damage + lane towers
+    python ingest_dl_comm_api_parquet.py --objectives-only --weeks 1-14  # backfill boss damage + lane towers
+    python ingest_dl_comm_api_parquet.py --stats-only --weeks 1-14       # backfill the stats.* columns
+
+--with-objectives / --objectives-only load two things the hero spotlight's lane and per-minute panels use:
+  - match_player.boss_damage: the player's end-of-match objective damage (max of stats.boss_damage)
+  - match_lanes: per match and lane, when each team lost its Tier 1 tower (NULL = never fell).
+    The lane is stored in assigned_lane numbering (1, 4, 6). The objectives use their own numbering
+    (Tier1Lane1/3/4), mapped 1->1, 3->4, 4->6: the pairing that lines up with each lane's net-worth lead.
+    Lane winner (computed in query_transform): the team that destroyed the OTHER team's Tier 1 first.
 
 --ranks-only updates the rank columns of rows already in match_player (and copies the match badges onto
 match_hero_roster, which the rank charts read) and nothing else: it reads ~10 small
@@ -64,7 +74,8 @@ log = setup_logging()
 # otherwise they stay NULL. Missing stats are NULL, never 0 (0 would drag averages down).
 STAT_COLUMNS = ["heal_lost", "max_health", "self_healing", "self_damage", "player_damage",
                 "heal_prevented", "player_healing", "damage_absorbed", "damage_mitigated",
-                "teammate_healing", "player_barriering", "absorption_provided", "player_damage_taken"]
+                "teammate_healing", "player_barriering", "absorption_provided", "player_damage_taken",
+                "teammate_barriering", "creep_damage", "neutral_damage"]
 COLUMNS: list[tuple[str, str]] = [
     ("match_id", "mp.match_id"),
     ("account_id", "mp.account_id"),
@@ -99,6 +110,14 @@ RANK_COLUMNS = [("average_badge", "average_badge"), ("player_rank", "player_rank
                 ("rank_outcome", "CAST(player_match_outcome AS VARCHAR)")]
 RANK_UPDATE = "DO UPDATE SET " + ", ".join(f"{c} = EXCLUDED.{c}" for c, _ in RANK_COLUMNS)
 STAT_EXPRESSIONS = [(c, f'CAST(list_max(mp."stats.{c}") AS INTEGER)') for c in STAT_COLUMNS]
+# --with-objectives: boss damage (cumulative per-minute array -> its max) and the objectives arrays.
+# objectives.team is the team that OWNS the objective (every player row of a match carries the same list);
+# destroyed_time_s 0 = still standing at the end.
+BOSS_EXPR = ("boss_damage", 'CAST(list_max(mp."stats.boss_damage") AS INTEGER)')
+OBJECTIVE_EXPRS = ['CAST(mp."objectives.team_objective" AS VARCHAR[])', 'CAST(mp."objectives.team" AS VARCHAR[])',
+                   'mp."objectives.destroyed_time_s"']
+# objective lane -> assigned_lane. Accepts the enum's names or its numbers (dumps differ).
+T1_LANE = {"Tier1Lane1": 1, "Tier1Lane3": 4, "Tier1Lane4": 6, "1": 1, "3": 4, "4": 6}
 DUCKDB_THREADS = int(os.environ.get("DUCKDB_THREADS", "16"))   # remote reads wait on the network:
                                                                 # more parallel requests than CPU cores helps
 
@@ -273,14 +292,17 @@ def register_week(conn, week: int, start: datetime, end: datetime) -> None:
     conn.commit()
 
 
-def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bool = False) -> int:
+def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bool = False,
+                       with_objectives: bool = False) -> int:
     # Cast the PARAMETERS to the column's own type so DuckDB never has to cast the column itself:
     # a cast on the column disables row-group skipping (the filter can't use the files' min/max
     # stats). The API's files currently store TIMESTAMP WITH TIME ZONE; older dumps used TIMESTAMP.
     cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
     col_type = cols["start_time"]
     rank = rank_exprs(cols)
-    columns = COLUMNS + rank + (STAT_EXPRESSIONS if with_stats else [])
+    with_objectives = with_objectives and "objectives.team_objective" in cols
+    columns = (COLUMNS + rank + (STAT_EXPRESSIONS if with_stats else [])
+               + ([BOSS_EXPR] if with_objectives and "stats.boss_damage" in cols else []))
     has_bans = "banned_hero_ids" in cols
     log.info("Damage/healing stats: %s  |  bans: %s",
              "included (--with-stats)" if with_stats else "skipped (NULL)",
@@ -289,9 +311,11 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
     # bans ride along as one extra trailing column (empty list -> NULL = not recorded)
     bans_expr = ("CASE WHEN len(mp.banned_hero_ids) > 0 THEN CAST(mp.banned_hero_ids AS SMALLINT[]) END"
                  if has_bans else "NULL")
+    obj_select = ", ".join(OBJECTIVE_EXPRS) if with_objectives else "NULL, NULL, NULL"
+    log.info("Objectives (boss damage, lane towers): %s", "loading" if with_objectives else "skipped")
     query = f"""
         SELECT {select},
-            {bans_expr} AS _bans
+            {bans_expr} AS _bans, {obj_select}
         FROM match_player mp
         WHERE mp.start_time >= CAST(? AS {col_type}) AND mp.start_time < CAST(? AS {col_type})
           AND (CAST(mp.match_mode AS VARCHAR) = 'Ranked' OR TRY_CAST(mp.match_mode AS INTEGER) = 4)
@@ -301,7 +325,10 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
         cur = RowStream(src, query, params)
     names = [c for c, _ in columns]
     i_match, i_start = names.index("match_id"), names.index("start_time")
+    conflict = RANK_UPDATE + (", boss_damage = EXCLUDED.boss_damage" if "boss_damage" in names else "")
+    nc = len(names)                               # trailing extras: bans, objectives x3
     total = n_ban_matches = 0
+    seen_lanes: set[int] = set()
     t0 = time.time()
     fetch_s = load_s = 0.0
     while True:
@@ -311,10 +338,18 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
         if not rows:
             break
         t = time.time()
-        bans = {r[i_match]: (r[i_match], r[i_start], r[-1]) for r in rows if r[-1]}   # one row per match
+        bans = {r[i_match]: (r[i_match], r[i_start], r[nc]) for r in rows if r[nc]}   # one row per match
         # existing rows only get their rank columns refreshed (backfills weeks ingested before they existed)
-        total += copy_upsert(conn, "match_player", names, (r[:-1] for r in rows), key=["match_id", "account_id"],
-                             conflict=RANK_UPDATE)
+        total += copy_upsert(conn, "match_player", names, (r[:nc] for r in rows), key=["match_id", "account_id"],
+                             conflict=conflict)
+        if with_objectives:
+            lanes = []
+            for r in rows:
+                if r[i_match] not in seen_lanes:  # every player row carries the same list: use one
+                    seen_lanes.add(r[i_match])
+                    lanes += lane_rows(r[i_match], r[i_start], *r[nc + 1:nc + 4])
+            if lanes:
+                copy_upsert(conn, "match_lanes", LANE_COLUMNS, lanes, key=["match_id", "lane"])
         if bans:
             n_ban_matches += copy_upsert(conn, "match_bans", ["match_id", "start_time", "banned_hero_ids"],
                                          bans.values(), key=["match_id"])
@@ -323,10 +358,30 @@ def load_match_players(src, conn, start: datetime, end: datetime, with_stats: bo
                  f"{total:,}", total / max(time.time() - t0, 1e-6), fetch_s, load_s)
     log.info("Source (download/decode) %.0fs = %.0f%%, PostgreSQL writes %.0fs = %.0f%%",
              fetch_s, 100 * fetch_s / max(fetch_s + load_s, 1e-6), load_s, 100 * load_s / max(fetch_s + load_s, 1e-6))
+    if with_objectives:
+        log.info("Lane towers recorded for %s matches", f"{len(seen_lanes):,}")
     if has_bans:
         log.info("Bans recorded for %s matches (a match can span two batches, so this may count a few twice)",
                  f"{n_ban_matches:,}")
     return total
+
+
+def lane_rows(match_id, start_time, objs, teams, times) -> list[tuple]:
+    """One match's objectives arrays -> [(match_id, start_time, lane, team0_t1_lost_s, team1_t1_lost_s)]."""
+    if not objs:
+        return []
+    lost = {}
+    for o, t, s in zip(objs, teams, times or []):
+        lane = T1_LANE.get(str(o))
+        side = str(t)[-1:]                       # 'Team0' / '0' -> '0'
+        if lane is None or side not in "01":
+            continue
+        lost[(lane, side)] = s or None           # 0 = never destroyed
+    return [(match_id, start_time, lane, lost.get((lane, "0")), lost.get((lane, "1")))
+            for lane in (1, 4, 6) if (lane, "0") in lost or (lane, "1") in lost]
+
+
+LANE_COLUMNS = ["match_id", "start_time", "lane", "team0_t1_lost_s", "team1_t1_lost_s"]
 
 
 class RowStream:
@@ -388,21 +443,73 @@ def week_match_range(conn, start: datetime, end: datetime) -> tuple[int, int, in
 def backfill_ranks(src, conn, start: datetime, end: datetime) -> int:
     """Fill the rank columns of rows already in match_player for [start, end); nothing else is touched.
     Returns rows updated."""
+    cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
+    rank = rank_exprs(cols)
+    missing = [c for c, e in rank if e == "NULL"]
+    if missing:
+        log.warning("  these files don't have: %s (left NULL)", ", ".join(missing))
+    return backfill_columns(src, conn, start, end, rank, "_stage_ranks")
+
+
+def backfill_objectives(src, conn, start: datetime, end: datetime) -> int:
+    """Fill match_player.boss_damage and match_lanes for rows already in match_player for [start, end).
+    Returns player rows updated."""
+    cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
+    if "objectives.team_objective" not in cols:
+        log.warning("  these files have no objectives columns: nothing to backfill")
+        return 0
+    boss = [BOSS_EXPR if "stats.boss_damage" in cols else ("boss_damage", "NULL")]
+    seen: set[int] = set()
+    n_lanes = 0
+
+    def on_rows(rows):                       # rows: match_id, account_id, boss_damage, start_time, objs x3
+        nonlocal n_lanes
+        lanes = []
+        for r in rows:
+            if r[0] not in seen:
+                seen.add(r[0])
+                lanes += lane_rows(r[0], r[3], *r[4:7])
+        if lanes:
+            copy_upsert(conn, "match_lanes", LANE_COLUMNS, lanes, key=["match_id", "lane"],
+                        conflict="DO UPDATE SET team0_t1_lost_s = EXCLUDED.team0_t1_lost_s, "
+                                 "team1_t1_lost_s = EXCLUDED.team1_t1_lost_s")
+            n_lanes += len(lanes)
+
+    n = backfill_columns(src, conn, start, end, boss, "_stage_boss",
+                         extra=["mp.start_time"] + OBJECTIVE_EXPRS, on_rows=on_rows)
+    log.info("  lane tower rows written: %s (%s matches)", f"{n_lanes:,}", f"{len(seen):,}")
+    return n
+
+
+def backfill_stats(src, conn, start: datetime, end: datetime) -> int:
+    """Fill the stats.* columns (STAT_COLUMNS) of rows already in match_player for [start, end).
+    Re-running the normal ingest with --with-stats doesn't do this: existing rows only get ranks refreshed."""
+    cols = {r[0] for r in src.execute("DESCRIBE match_player").fetchall()}
+    exprs = [(c, e if f"stats.{c}" in cols else "NULL") for c, e in STAT_EXPRESSIONS]
+    missing = [c for c, e in exprs if e == "NULL"]
+    if missing:
+        log.warning("  these files don't have: %s (left NULL)", ", ".join(missing))
+    return backfill_columns(src, conn, start, end, exprs, "_stage_stats")
+
+
+def backfill_columns(src, conn, start: datetime, end: datetime, exprs: list[tuple[str, str]], stage: str,
+                     extra: list[str] = (), on_rows=None) -> int:
+    """UPDATE the given match_player columns ((column, DuckDB expression) pairs) on rows already loaded for
+    [start, end). `extra` expressions are selected after them and handed, with the whole batch, to
+    on_rows(rows) (rows = match_id, account_id, *columns, *extra). Returns rows updated."""
     rng = week_match_range(conn, start, end)
     if not rng:
         log.warning("  no rows in match_player for this range yet: run the normal ingest for it first")
         return 0
     lo, hi, n_have = rng
     cols = {r[0]: r[1] for r in src.execute("DESCRIBE match_player").fetchall()}
-    rank = rank_exprs(cols)
-    missing = [c for c, e in rank if e == "NULL"]
-    if missing:
-        log.warning("  these files don't have: %s (left NULL)", ", ".join(missing))
     col_type = cols["start_time"]
-    names = ["match_id", "account_id"] + [c for c, _ in rank]
+    names = ["match_id", "account_id"] + [c for c, _ in exprs]
+    nc = len(names)
+    select = ", ".join([e for _, e in exprs] + list(extra))
     # match_id bounds skip whole files / row groups fast (files are split by match_id); start_time keeps it exact
     query = f"""
-        SELECT mp.match_id, mp.account_id, {", ".join(e for _, e in rank)}
+        SELECT mp.match_id, mp.account_id, {select}
         FROM match_player mp
         WHERE mp.match_id BETWEEN ? AND ?
           AND mp.start_time >= CAST(? AS {col_type}) AND mp.start_time < CAST(? AS {col_type})
@@ -414,28 +521,29 @@ def backfill_ranks(src, conn, start: datetime, end: datetime) -> int:
     t0 = time.time()
     with Heartbeat("waiting for the first rows"):
         cur = RowStream(src, query, params)
-        first = cur.fetchmany(BATCH_SIZE)
+        rows = cur.fetchmany(BATCH_SIZE)
     total = 0
-    rows = first
     sets = ", ".join(f"{c} = s.{c}" for c in names[2:])
     with conn.cursor() as pc:
-        pc.execute("CREATE TEMP TABLE IF NOT EXISTS _stage_ranks AS SELECT " + ", ".join(names)
+        pc.execute(f"CREATE TEMP TABLE IF NOT EXISTS {stage} AS SELECT " + ", ".join(names)
                    + " FROM match_player LIMIT 0")
     conn.commit()
     while rows:
         buf = io.StringIO()
         w = csv.writer(buf)
         for r in rows:
-            w.writerow(["" if v is None else v for v in r])
+            w.writerow(["" if v is None else v for v in r[:nc]])
         buf.seek(0)
         with conn.cursor() as pc:
-            pc.execute("TRUNCATE _stage_ranks")
-            pc.copy_expert(f"COPY _stage_ranks ({', '.join(names)}) FROM STDIN WITH (FORMAT csv)", buf)
+            pc.execute(f"TRUNCATE {stage}")
+            pc.copy_expert(f"COPY {stage} ({', '.join(names)}) FROM STDIN WITH (FORMAT csv)", buf)
             # the dump stores some rows twice (identical): DISTINCT ON keeps UPDATE to one source row per target
             pc.execute(f"""UPDATE match_player m SET {sets}
-                           FROM (SELECT DISTINCT ON (match_id, account_id) * FROM _stage_ranks) s
+                           FROM (SELECT DISTINCT ON (match_id, account_id) * FROM {stage}) s
                            WHERE m.match_id = s.match_id AND m.account_id = s.account_id""")
             total += pc.rowcount
+        if on_rows:
+            on_rows(rows)
         conn.commit()
         log.info("  updated %s / %s rows (%.0fs)", f"{total:,}", f"{n_have:,}", time.time() - t0)
         rows = cur.fetchmany(BATCH_SIZE)
@@ -522,16 +630,24 @@ def main() -> int:
     ap.add_argument("--source-files", nargs="+", help="local/remote parquet files instead of the manifest")
     ap.add_argument("--with-stats", action="store_true",
                     help="also load the 13 damage/healing stats (~10x more download)")
+    ap.add_argument("--with-objectives", action="store_true",
+                    help="also load boss damage + each lane's Tier 1 tower times (lane wins)")
+    ap.add_argument("--objectives-only", action="store_true",
+                    help="only fill boss damage + lane towers for rows already loaded (backfill)")
+    ap.add_argument("--stats-only", action="store_true",
+                    help="only fill the stats.* columns (damage, healing, ...) for rows already loaded (backfill)")
     ap.add_argument("--rosters-only", action="store_true",
                     help="with --ranks-only: just copy rank badges from match_player onto the rosters (no download)")
     ap.add_argument("--ranks-only", action="store_true",
                     help="only fill the rank columns of rows already loaded (fast backfill)")
     args = ap.parse_args()
 
-    if args.ranks_only:
+    if sum([args.ranks_only, args.objectives_only, args.stats_only]) > 1:
+        raise SystemExit("--ranks-only, --objectives-only and --stats-only are separate runs")
+    if args.ranks_only or args.objectives_only or args.stats_only:
         return ranks_only(args)
     if args.weeks:
-        raise SystemExit("--weeks is for --ranks-only; for full ingests run one --week at a time")
+        raise SystemExit("--weeks is for the --*-only backfills; for full ingests run one --week at a time")
     what, start, end, week = resolve_range(args)
     log.info("%s: %s -> %s (UTC, end exclusive)", what, f"{start:%Y-%m-%d %H:%M}", f"{end:%Y-%m-%d %H:%M}")
 
@@ -547,7 +663,7 @@ def main() -> int:
         with Heartbeat("reading file footers"):
             src = duckdb_source(files, same_schema=not args.source_files)
             src.execute("DESCRIBE match_player").fetchall()
-        n = load_match_players(src, conn, start, end, args.with_stats)
+        n = load_match_players(src, conn, start, end, args.with_stats, args.with_objectives)
         if n == 0:
             log.error("No ranked rows found for %s — source not published yet, or wrong dates?", what)
             return 1
@@ -583,6 +699,11 @@ def refresh_roster_badges(conn, start: datetime, end: datetime) -> int:
 
 
 def ranks_only(args) -> int:
+    """--ranks-only and --objectives-only: fill columns of rows already loaded, range by range."""
+    objectives = getattr(args, "objectives_only", False)
+    stats = getattr(args, "stats_only", False)
+    what_cols = "boss damage + lane towers" if objectives else "stats columns" if stats else "rank columns"
+    objectives = objectives or stats                 # both need the download, neither touches rosters
     ranges = []
     if args.weeks:
         ranges = [(f"Week {w}", *week_bounds(w)) for w in parse_weeks(args.weeks)]
@@ -592,11 +713,11 @@ def ranks_only(args) -> int:
     conn = connect()
     try:
         ensure_schema(conn)                      # adds the rank columns if this DB predates them
-        entries = None if args.rosters_only else source_entries(args)
+        entries = None if (args.rosters_only and not objectives) else source_entries(args)
         done = 0
         for what, start, end in ranges:
-            log.info("%s: %s -> %s, rank columns only", what, f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}")
-            if args.rosters_only:                # no download: match_player already has the ranks
+            log.info("%s: %s -> %s, %s only", what, f"{start:%Y-%m-%d}", f"{end:%Y-%m-%d}", what_cols)
+            if args.rosters_only and not objectives:                # no download: match_player already has the ranks
                 log.info("%s: %s roster rows got their rank badges", what,
                          f"{refresh_roster_badges(conn, start, end):,}")
                 done += 1
@@ -610,6 +731,12 @@ def ranks_only(args) -> int:
             with Heartbeat("reading file footers"):
                 src = duckdb_source(files, same_schema=not args.source_files)
                 src.execute("DESCRIBE match_player").fetchall()
+            if objectives:
+                n = (backfill_stats if stats else backfill_objectives)(src, conn, start, end)
+                src.close()
+                log.info("%s: %s player rows filled (%s)", what, f"{n:,}", what_cols)
+                done += n
+                continue
             n = backfill_ranks(src, conn, start, end)
             src.close()
             log.info("%s: %s rows updated, %s roster rows got their rank badges", what, f"{n:,}",
@@ -618,7 +745,7 @@ def ranks_only(args) -> int:
         log.info("Done: %s rows updated across %s range(s)", f"{done:,}", len(ranges))
         return 0 if done else 1
     except Exception:
-        log.exception("Rank backfill failed")
+        log.exception("Backfill failed (%s)", what_cols)
         conn.rollback()
         return 1
     finally:

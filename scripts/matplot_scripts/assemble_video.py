@@ -26,6 +26,8 @@ What it does
   - joins every segment into one video (stream copy, no second encode) + YouTube chapters
   - renders a 9:16 short (card on top, face below, hook text + intro sound like your other shorts) for every
     segment whose name has "| ..."
+  - ends the video and every short on the outro card (outro.py in ~/Streaming/scripts next to render_pipeline.py:
+    cached, joined with render_pipeline's swirl transition); --no-outro leaves it off
 
 Order and chapter titles come from an order file (format in orders/patch_notes.txt):
   --order auto (default)  order.txt in the cards folder if there is one; else orders/patch_notes.txt for a patch
@@ -71,8 +73,22 @@ SHORT_HOOK_Y = 1450                  # hook text sits at the top of the face are
 CARD_FPS = 30                        # cards are rendered at 30 fps (frames are converted to the recording's rate)
 CHAPTER_MIN_S = 10                   # YouTube needs chapters of 10 s or more; shorter ones merge with the next
 PIPELINE_CANDIDATES = [Path(__file__).resolve().parent / "render_pipeline.py",
+                       Path.home() / "Streaming" / "scripts" / "render_pipeline.py",
                        Path.home() / "Streaming" / "render_pipeline.py",
                        Path.home() / "Streaming" / "Scripts" / "render_pipeline.py"]
+
+
+def load_outro(rp):
+    """outro.py (the end card), from the folder render_pipeline.py is in (~/Streaming/scripts), or None."""
+    folder = str(Path(rp.__file__).resolve().parent)
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    try:
+        import outro
+        return outro
+    except ImportError:
+        print(f"  [!] outro.py not found next to render_pipeline.py ({folder}): no outro added")
+        return None
 
 
 def load_pipeline(path: str | None):
@@ -383,6 +399,15 @@ def make_main_video(rp, args, segs: list[dict], tmp: Path, out: Path) -> None:
             raise SystemExit(f"Could not render the segment for {s['card']}.")
         pieces.append(piece)
         print(f"  [+] {k + 1}/{len(segs)} {s['card']}")
+    if not args.no_outro:
+        # only the last piece is re-encoded (with the swirl into the outro); the rest still join by stream copy
+        outro = load_outro(rp)
+        last = str(tmp / "piece_last_outro.mkv")
+        if outro and outro.join(rp, pieces[-1], last, "wide", quality=rp.SEGMENT_QUALITY):
+            pieces[-1] = last
+            print("  [+] outro")
+        else:
+            print("  [!] outro could not be added; the video ends without it")
     # every piece has the same encoder settings, so they join without a second encode (as render_pipeline does)
     lst = tmp / "pieces.txt"
     lst.write_text("".join(f"file {rp.concat_quote(p)}\n" for p in pieces))
@@ -418,6 +443,7 @@ def main() -> int:
     ap.add_argument("--no-shorts", action="store_true")
     ap.add_argument("--shorts-only", action="store_true",
                     help="only make the shorts (skips the long video; renders just the cards shorts use)")
+    ap.add_argument("--no-outro", action="store_true", help="don't end the video / shorts on the outro card")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 1))
     args = ap.parse_args()
     for k in ("face_crop", "short_crop"):              # accept "crop=1120:1440:630:0" too (ffmpeg filter syntax)
@@ -516,6 +542,13 @@ def main() -> int:
                                              "-c", "copy", "-movflags", "+faststart", str(dest)])
                     if not ok:
                         print(f"  [!] joining short {name} failed: {rp.short_error(err)}")
+                if ok and not args.no_outro:
+                    outro = load_outro(rp)
+                    joined = str(tmp / f"short_{name}_outro.mp4")
+                    if outro and outro.join(rp, str(dest), joined, "tall", quality=rp.SHORT_QUALITY):
+                        shutil.move(joined, dest)
+                    else:
+                        print(f"  [!] outro could not be added to short {name}")
                 if ok:
                     made += 1
                     secs = sum(s["len"] for s in g)

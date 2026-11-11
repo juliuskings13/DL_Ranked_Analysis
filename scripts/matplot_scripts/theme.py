@@ -289,7 +289,8 @@ def draw_archetype_legend(fig: Figure, y: float = HEADER_LEGEND_Y, alpha: float 
 
 
 def draw_kpi_row(fig: Figure, items: list[tuple], height_px: float | None = None,
-                 alpha: float | list = 1.0) -> None:
+                 alpha: float | list = 1.0, label_max_px: float = 20, label_color: str | None = None,
+                 label_h_frac: float = 0.17) -> None:
     """Row of stat tiles directly under the header.
     items = [(value, label, color), ...] or (value, label, color, sub) for a second caption
     line (e.g. the change vs last week). Fonts are sized to the tile; content placed
@@ -304,11 +305,13 @@ def draw_kpi_row(fig: Figure, items: list[tuple], height_px: float | None = None
     w = (1 - 2 * MARGIN_X - gap * (n - 1)) / n
     w_px = w * CARD_PX
     v_px = fit_font_px([it[0] for it in items], w_px * 0.84, height_px * 0.36, max_px=52, min_px=20)
-    l_px = fit_font_px([it[1] for it in items], w_px * 0.88, height_px * 0.17, max_px=20,
-                       min_px=12, bold=False)
+    l_px = fit_font_px([it[1] for it in items], w_px * 0.88, height_px * label_h_frac, max_px=label_max_px,
+                       min_px=12, bold=False)      # one size for every label (the longest decides)
     subs = [it[3] for it in items if len(it) > 3 and it[3]]
     s_px = fit_font_px(subs, w_px * 0.88, height_px * 0.15, max_px=18, min_px=11) if subs else 0
     y_val, y_lab, y_sub = (0.34, 0.66, 0.86) if has_sub else (0.40, 0.80, None)
+    if not has_sub and label_h_frac > 0.2:          # big labels: value higher, label lower
+        y_val, y_lab = 0.33, 0.74
     alphas = list(alpha) if isinstance(alpha, (list, tuple)) else [alpha] * n
     for k, it in enumerate(items):
         value, label, color = it[:3]
@@ -322,7 +325,7 @@ def draw_kpi_row(fig: Figure, items: list[tuple], height_px: float | None = None
                                       alpha=alpha))
         fig.text(x + w / 2, top - h * y_val, value, ha="center", va="center", color=color,
                  fontsize=px_to_pt(v_px), fontweight="bold", alpha=alpha)
-        fig.text(x + w / 2, top - h * y_lab, label, ha="center", va="center", color=TEXT_MUTED,
+        fig.text(x + w / 2, top - h * y_lab, label, ha="center", va="center", color=label_color or TEXT_MUTED,
                  fontsize=px_to_pt(l_px), alpha=alpha)
         if sub:
             fig.text(x + w / 2, top - h * y_sub, sub, ha="center", va="center", color=TEXT,
@@ -389,7 +392,7 @@ def fit_card(fig: Figure, iterations: int = 4) -> None:
 def save_card(fig: Figure, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     fit_card(fig)
-    fig.savefig(path, dpi=DPI, facecolor=BG)   # no bbox_inches: card must stay exactly OUT_PX x OUT_PX
+    fig.savefig(path, dpi="figure", facecolor=BG)   # the figure's own dpi (shorts cards use a higher one); no bbox_inches
     plt.close(fig)
     return path
 

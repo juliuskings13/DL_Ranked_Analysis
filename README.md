@@ -141,6 +141,31 @@ python scripts/ingest_scripts/ingest_dl_comm_api_parquet.py --ranks-only --weeks
 python scripts/ingest_scripts/ingest_dl_comm_api_parquet.py --ranks-only --weeks 1-12
 ```
 
+### Boss damage and lane towers (hero spotlight wide / tall cards)
+
+`run_pipeline.py` now ingests with `--with-objectives`: each player's objective damage (`match_player.boss_damage`)
+and, per match and lane, when each team lost its Tier 1 tower (`match_lanes`). A lane is **won** by the team that
+destroys the other team's Tier 1 in that lane first. Weeks loaded before this have neither; backfill them:
+
+```bash
+python scripts/ingest_scripts/ingest_dl_comm_api_parquet.py --objectives-only --weeks 1-14
+```
+
+Then re-run `query_transform.py` for those weeks/periods to get `hero_lanes`, `hero_lane_partners`,
+`hero_lane_matchups`, `hero_mvp` and `hero_per_min`. Damage and healing per minute also need `--with-stats` data.
+
+### Hero spotlight shapes
+
+`hero_spotlight.py` makes `hero_<name>` (1440x1440, talking-head videos), `hero_<name>_wide` (2560x1440) and
+`hero_<name>_tall` (1440x2560). The wide and tall cards hold the square card unchanged plus per-minute, MVP,
+lane, lane-partner and lane-matchup panels.
+
+```bash
+python hero_spotlight.py <folder> --shapes square,wide,tall            # PNGs
+python animate.py <folder> --card hero_victor_wide                      # one clip
+python animate.py <folder> --scenes plans/hero_compendium_wide_scenes.csv --concat compendium_wide.mp4 --fps 30
+```
+
 ### Patch-notes videos
 
 ```bash
@@ -195,3 +220,10 @@ not committed; the ingest scripts recreate them.
 
 Match data from the [Deadlock Community API](https://deadlock-api.com). Deadlock and its
 hero art are property of Valve Corporation; this project is not affiliated with Valve.
+
+### Outro (end card) for videos and shorts
+
+`assemble_video.py` ends the long video and every short on the channel's outro card, joined with
+render_pipeline's swirl transition. The outro itself (`outro.py`) is a streaming asset, not part of this
+project: it lives in `~/Streaming/scripts` next to `render_pipeline.py`, and assemble_video loads it from the
+folder render_pipeline.py is in. `--no-outro` leaves it off; without outro.py the video is made without one.

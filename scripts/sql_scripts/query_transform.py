@@ -7,6 +7,8 @@ How it works
          wk_matches  complete matches of the period (12 players, 6 per side, one winner, 12 different heroes)
          wk_players  their 12 player rows, joined to heroes
        plus wk_type_counts (heroes of each archetype per team, zeros included)
+       and wk_lanes (who won each lane: the team that took the OTHER team's Tier 1 first; needs the
+       ingest's --with-objectives / --objectives-only, otherwise the lane-win columns come out empty)
     3. run every export against those small tables, instead of re-filtering the full
        match_player table 15 times
     4. write <project>/period_analyses/week<N>_analysis/<name>.csv (or .../<period name>/ for other periods),
@@ -36,6 +38,19 @@ from pipeline_common import connect, get_period, parse_date, period_folder, peri
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]       # scripts/sql_scripts/ -> project root
 MIN_DUO_GAMES = 1000          # duos below this are not exported (the chart also filters)
+MIN_LANE_PAIR_GAMES = 100     # lane partners / lane opponents below this are not exported
+# hero_per_min: (export column, wk_players expression); hero_spotlight picks which ones each hero shows
+PER_MIN_STATS = [
+    ("souls_pm", "net_worth"), ("damage_pm", "player_damage"), ("obj_damage_pm", "boss_damage"),
+    ("tanked_pm", "player_damage_taken"), ("mitigated_pm", "damage_mitigated"),
+    ("ally_heal_pm", "teammate_healing"), ("ally_barrier_pm", "teammate_barriering"),
+    ("barrier_pm", "player_barriering"),                       # all barriers, own shields included
+    ("heal_pm", "player_healing"),                            # all healing, self included
+    ("self_heal_pm", "self_healing"),
+    ("self_shield_pm", "(player_barriering - teammate_barriering)"),   # the hero's shields on itself
+    ("creep_pm", "(creep_damage + neutral_damage)"),           # lane creeps + jungle camps
+    ("heal_denied_pm", "heal_prevented"), ("kills_pm", "kills"), ("assists_pm", "assists"),
+]
 TOP_COMPS = 20
 log = setup_logging()
 
@@ -57,13 +72,30 @@ STAGING = [
          AND cardinality(team0) = 6 AND cardinality(team1) = 6
          -- no hero twice in one match (rare API glitch; validate_week reports how many)
          AND cardinality(ARRAY(SELECT DISTINCT h FROM unnest(team0 || team1) AS h)) = 12""",
+    # lane winner per match and lane (lane = assigned_lane numbering); NULL = undecided (both Tier 1s stood,
+    # or fell the same second)
+    """CREATE TEMP TABLE wk_lanes AS
+       SELECT l.match_id, l.lane,
+              CASE WHEN l.team1_t1_lost_s IS NOT NULL
+                        AND (l.team0_t1_lost_s IS NULL OR l.team1_t1_lost_s < l.team0_t1_lost_s) THEN 'team0'
+                   WHEN l.team0_t1_lost_s IS NOT NULL
+                        AND (l.team1_t1_lost_s IS NULL OR l.team0_t1_lost_s < l.team1_t1_lost_s) THEN 'team1'
+              END AS lane_winner
+       FROM match_lanes l JOIN wk_matches m USING (match_id)""",
     """CREATE TEMP TABLE wk_players AS
        SELECT mp.match_id, mp.team, mp.won, mp.hero_id, m.duration_s, m.rank_tier,
-              h.name AS hero_name, LOWER(h.hero_type) AS hero_type
+              h.name AS hero_name, LOWER(h.hero_type) AS hero_type,
+              NULLIF(mp.assigned_lane, 0) AS lane, mp.mvp_rank, mp.net_worth, mp.player_damage,
+              mp.boss_damage, mp.player_healing, mp.teammate_healing, mp.player_barriering, mp.player_damage_taken,
+              mp.damage_mitigated, mp.self_healing, mp.heal_prevented, mp.last_hits, mp.denies, mp.kills,
+              mp.assists, mp.teammate_barriering, mp.creep_damage, mp.neutral_damage,
+              CASE WHEN l.lane_winner IS NOT NULL THEN l.lane_winner = LOWER(mp.team) END AS lane_won
        FROM match_player mp
        JOIN wk_matches m USING (match_id)
-       JOIN heroes h ON h.hero_id = mp.hero_id""",
+       JOIN heroes h ON h.hero_id = mp.hero_id
+       LEFT JOIN wk_lanes l ON l.match_id = mp.match_id AND l.lane = mp.assigned_lane""",
     "CREATE INDEX ON wk_players (match_id, team)",
+    "CREATE INDEX ON wk_players (match_id, lane)",
     # heroes of each archetype per team, INCLUDING zero (a team with no mystics has a row with n = 0)
     """CREATE TEMP TABLE wk_type_counts AS
        WITH teams AS (SELECT match_id, team, BOOL_OR(won) AS won FROM wk_players GROUP BY 1, 2),
@@ -187,6 +219,73 @@ EXPORTS: dict[str, tuple[str, tuple[str, ...]]] = {
           AND start_time < COALESCE(%(end)s::timestamptz, 'infinity')
         ORDER BY start_time""", ("csv",)),
 
+    # ---- hero_spotlight wide/tall cards ------------------------------------------------------------
+    # Lanes: where each hero starts and how it does there. lane = assigned_lane (1, 4, 6).
+    # lane_games / lane_wins only count lanes that were decided (a Tier 1 fell), so lane_winrate is
+    # "how often this hero's lane took the enemy Tier 1 first".
+    "hero_lanes": ("""
+        SELECT hero_name, lane, COUNT(*) AS games, SUM(won::int) AS wins,
+               ROUND(100.0 * AVG(won::int), 2) AS winrate,
+               ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY hero_name), 2) AS lane_share,
+               COUNT(lane_won) AS lane_games, SUM(lane_won::int) AS lane_wins,
+               ROUND(100.0 * AVG(lane_won::int), 2) AS lane_winrate
+        FROM wk_players WHERE lane IS NOT NULL
+        GROUP BY hero_name, lane ORDER BY hero_name, lane""", ("csv",)),
+
+    # Lane partners: same team, same starting lane. Both directions (one row per hero and partner).
+    "hero_lane_partners": ("""
+        SELECT a.hero_name, b.hero_name AS partner_name, COUNT(*) AS games, SUM(a.won::int) AS wins,
+               ROUND(100.0 * AVG(a.won::int), 2) AS winrate,
+               COUNT(a.lane_won) AS lane_games, ROUND(100.0 * AVG(a.lane_won::int), 2) AS lane_winrate
+        FROM wk_players a
+        JOIN wk_players b ON b.match_id = a.match_id AND b.team = a.team AND b.lane = a.lane
+                         AND b.hero_id <> a.hero_id
+        WHERE a.lane IS NOT NULL
+        GROUP BY a.hero_name, b.hero_name
+        HAVING COUNT(*) >= %(min_lane)s
+        ORDER BY a.hero_name, winrate DESC""", ("csv",)),
+
+    # Lane matchups: the enemies who started in the same lane (assigned_lane matches across teams).
+    "hero_lane_matchups": ("""
+        SELECT a.hero_name, b.hero_name AS opponent_name, COUNT(*) AS games, SUM(a.won::int) AS wins,
+               ROUND(100.0 * AVG(a.won::int), 2) AS winrate,
+               COUNT(a.lane_won) AS lane_games, ROUND(100.0 * AVG(a.lane_won::int), 2) AS lane_winrate
+        FROM wk_players a
+        JOIN wk_players b ON b.match_id = a.match_id AND b.team <> a.team AND b.lane = a.lane
+        WHERE a.lane IS NOT NULL
+        GROUP BY a.hero_name, b.hero_name
+        HAVING COUNT(*) >= %(min_lane)s
+        ORDER BY a.hero_name, winrate DESC""", ("csv",)),
+
+    # MVP: mvp_rank 1 = the match MVP (always on the winning side), 2-3 = the two "key players" (at least one
+    # of them on the losing side). top3_loss_rate = share of the hero's LOSSES where it was still top 3.
+    # Only matches where the API recorded MVPs count (a match with none has mvp_rank NULL for all 12).
+    "hero_mvp": ("""
+        WITH rec AS (SELECT match_id FROM wk_players GROUP BY match_id HAVING COUNT(mvp_rank) > 0)
+        SELECT hero_name, COUNT(*) AS games,
+               SUM((mvp_rank = 1)::int) AS mvp, SUM((mvp_rank <= 3)::int) AS top3,
+               ROUND(100.0 * AVG(COALESCE(mvp_rank = 1, false)::int), 2) AS mvp_rate,   -- NULL = not top 3 = 0
+               ROUND(100.0 * AVG(COALESCE(mvp_rank <= 3, false)::int), 2) AS top3_rate,
+               COUNT(*) FILTER (WHERE NOT won) AS losses,
+               SUM((mvp_rank <= 3)::int) FILTER (WHERE NOT won) AS top3_in_losses,
+               -- key player while losing: still swinging games the team couldn't win
+               ROUND(100.0 * AVG(COALESCE(mvp_rank <= 3, false)::int) FILTER (WHERE NOT won), 2) AS top3_loss_rate
+        FROM wk_players JOIN rec USING (match_id)
+        GROUP BY hero_name ORDER BY mvp_rate DESC""", ("csv",)),
+
+    # Per-minute output, macro level: total over total minutes (ratio of sums), each stat over the games
+    # that have it (the stats.* ones need --with-stats, objective damage --with-objectives). Plus kill
+    # participation, which is per match, not per minute.
+    "hero_per_min": ("""
+        SELECT hero_name, COUNT(*) AS games,
+""" + ",\n".join(f"               ROUND(60.0 * SUM({c}) / NULLIF(SUM(duration_s) FILTER (WHERE {c} IS NOT NULL), 0), 3)"
+                  f" AS {name}" for name, c in PER_MIN_STATS) + """,
+               -- kill participation: (kills + assists) / the team's kills, per match, averaged over matches
+               ROUND(100.0 * AVG((kills + assists)::numeric / NULLIF(team_kills, 0)), 2) AS kill_participation,
+               COUNT(player_damage) AS games_with_stats, COUNT(boss_damage) AS games_with_obj
+        FROM (SELECT *, SUM(kills) OVER (PARTITION BY match_id, team) AS team_kills FROM wk_players) p
+        GROUP BY hero_name ORDER BY hero_name""", ("csv",)),
+
     # most_freq_comps
     "top_20_freq_comps": ("""
         WITH sides AS (
@@ -274,7 +373,7 @@ def transform(name: str, out_dir: Path) -> int:
                 log.error("%s isn't over yet (ends %s UTC): analyze it after that", name, f"{end:%Y-%m-%d %H:%M}")
                 return 1
             log.info("%s: %s -> %s  =>  %s", name, start, end or "open", out_dir)
-            params = {"start": start, "end": end, "min_duo": MIN_DUO_GAMES, "top_comps": TOP_COMPS}
+            params = {"start": start, "end": end, "min_duo": MIN_DUO_GAMES, "min_lane": MIN_LANE_PAIR_GAMES, "top_comps": TOP_COMPS}
             t0 = time.time()
             for sql in STAGING:
                 cur.execute(sql, params)
@@ -287,6 +386,12 @@ def transform(name: str, out_dir: Path) -> int:
             n_players = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM match_bans b JOIN wk_matches m USING (match_id)")
             n_ban_matches = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT match_id) FROM wk_lanes")
+            n_lane_matches = cur.fetchone()[0]
+            if n_lane_matches < 0.5 * max(n_matches, 1):
+                log.warning("Lane towers recorded for only %s of %s matches: run the ingest with "
+                            "--objectives-only for this range to fill lane wins", f"{n_lane_matches:,}",
+                            f"{n_matches:,}")
             log.info("Bans recorded for %s of %s complete matches (%.0f%%)", f"{n_ban_matches:,}",
                      f"{n_matches:,}", 100 * n_ban_matches / max(n_matches, 1))
             log.info("Staged %s complete matches (%s player rows) in %.1fs", f"{n_matches:,}",
@@ -318,7 +423,7 @@ def transform(name: str, out_dir: Path) -> int:
                 "start": str(start), "end": str(end) if end else None,
                 "complete_matches": n_matches, "player_rows_in_period": n_rows_all,
                 "incomplete_rows_excluded": n_rows_all - 12 * n_matches,
-                "matches_with_bans": n_ban_matches,
+                "matches_with_bans": n_ban_matches, "matches_with_lanes": n_lane_matches,
                 "ban_coverage_pct": round(100 * n_ban_matches / max(n_matches, 1), 1)}
         (out_dir / "period_meta.json").write_text(json.dumps(meta, indent=2))
     finally:
