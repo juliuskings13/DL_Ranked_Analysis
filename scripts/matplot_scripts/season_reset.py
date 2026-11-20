@@ -5,7 +5,8 @@ to every player's rank (last rank of the old season vs first rank of the new one
 Data comes straight from the Deadlock Community API's SQL endpoint (ClickHouse), so it works before the
 new season's matches are in your database: one aggregated query, a few hundred rows.
 
-    python season_reset.py export <out dir>            # -> reset_steps.csv + season_reset_meta.json
+    python season_reset.py export <out dir>            # -> reset_steps.csv + new_players.csv + season_reset_meta.json
+    python season_reset.py export-new <out dir>        # only new_players.csv (keeps the published reset numbers)
     python season_reset.py cards  <out dir>            # -> graphs/s2_*.png
     python animate.py <out dir>                        # animated clips (the folder is detected by its meta file)
 
@@ -98,6 +99,32 @@ WHERE cal1 = 0 AND cal2 = 0
 GROUP BY ALL ORDER BY 1, 2"""
 
 
+def new_players_sql() -> str:
+    """Players placed into the new season with no old-season rank. Returning players skip placements entirely,
+    so anyone who played placement games (player_rank_initial_calibration_games >= 1) had no rank last season.
+    Their placement = the first rank they're shown (the first match they enter with a rank badge). s2_step -1 =
+    still in placements. tried_s1 = they played at least one old-season ranked match at any point in that season
+    but never finished its placements; 0 = their first ranked match ever is in the new season (truly new)."""
+    s_new = SEASONS[NEW]
+    lookback = SEASONS[OLD]["start"]                 # the whole old season
+    return f"""
+WITH s2 AS (
+    SELECT account_id,
+           arg_min(player_rank_initial_flat_progress, start_time)
+               FILTER (WHERE player_rank_initial_display_rank > 0)::BIGINT AS p
+    FROM match_player
+    WHERE start_time >= to_timestamp({s_new['start']}) AND rank_interval = {NEW}
+    GROUP BY account_id
+    HAVING max(player_rank_initial_calibration_games) >= 1),
+tried AS (
+    SELECT DISTINCT account_id FROM match_player
+    WHERE start_time >= to_timestamp({lookback}) AND start_time < to_timestamp({s_new['start'] + 4 * 3600})
+      AND rank_interval = {OLD} AND account_id IN (SELECT account_id FROM s2))
+SELECT CASE WHEN p IS NULL THEN -1 ELSE {step_sql('p', NEW)} END AS s2_step,
+       (account_id IN (SELECT account_id FROM tried))::INT AS tried_s1, count(*) AS players
+FROM s2 GROUP BY ALL ORDER BY 1, 2"""
+
+
 def query_api(sql: str, attempts: int = 6) -> list[dict]:
     import requests
     for k in range(attempts):
@@ -128,6 +155,28 @@ def export(out: Path) -> None:
             "lookback_days": S1_LOOKBACK_DAYS}
     (out / "season_reset_meta.json").write_text(json.dumps(meta, indent=2))
     print(f"{meta['players']:,} players -> {out}")
+    export_new(out)
+
+
+def export_new(out: Path) -> None:
+    """new_players.csv (s2_step, tried_s1, players) + its counts in season_reset_meta.json."""
+    out.mkdir(parents=True, exist_ok=True)
+    rows = query_api(new_players_sql())
+    if isinstance(rows, dict):
+        rows = rows.get("data") or rows.get("rows") or []
+    df = pd.DataFrame(rows)
+    df.columns = ["s2_step", "tried_s1", "players"]
+    df = df.apply(pd.to_numeric).astype(int)
+    df.to_csv(out / "new_players.csv", index=False)
+    meta_path = out / "season_reset_meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {"old": OLD, "new": NEW}
+    placed = df[df["s2_step"] >= 0]
+    meta["new_players"] = {"placed": int(placed["players"].sum()),
+                           "in_placements": int(df.loc[df["s2_step"] < 0, "players"].sum()),
+                           "exported": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
+    meta_path.write_text(json.dumps(meta, indent=2))
+    print(f"{meta['new_players']['placed']:,} new players placed "
+          f"({meta['new_players']['in_placements']:,} still in placements) -> {out / 'new_players.csv'}")
 
 
 # =============================================================================
@@ -139,7 +188,13 @@ def load(data_dir: Path) -> dict:
     df["change"] = df["s2_step"] - df["s1_step"]
     df["r1"] = df["s1_step"] // 6 + 1
     df["r2"] = df["s2_step"] // 6 + 1
-    return {"steps": df, "meta": meta}
+    d = {"steps": df, "meta": meta}
+    if (data_dir / "new_players.csv").exists():
+        n = pd.read_csv(data_dir / "new_players.csv")
+        n = n[n["s2_step"] >= 0].copy()
+        n["r2"] = n["s2_step"] // 6 + 1
+        d["new"] = n
+    return d
 
 
 def by_rank(df: pd.DataFrame) -> pd.DataFrame:
@@ -407,6 +462,157 @@ def render_closer(d: dict, progress: float = 1.0, highlight=None):
     return fig
 
 
+def _badge_of_step(step: int) -> int:
+    return (step // 6 + 1) * 10 + step % 6 + 1
+
+
+def _weighted_median(values, weights) -> float:
+    order = np.argsort(values)
+    v, w = np.asarray(values)[order], np.asarray(weights)[order]
+    return float(v[np.searchsorted(np.cumsum(w), w.sum() / 2)])
+
+
+def _rank_shares(d: dict):
+    """(new players per rank, returning players per rank, highest rank with anyone), counts."""
+    new = d["new"].groupby("r2")["players"].sum().reindex(range(1, 12), fill_value=0)
+    ret = d["steps"].groupby("r2")["players"].sum().reindex(range(1, 12), fill_value=0)
+    top = int(max(new[new > 0].index.max(), ret[ret > 0].index.max()))
+    return new.loc[:top], ret.loc[:top], top
+
+
+def _rank_axis(ax, ranks, p_frame: float) -> None:
+    ax.set_xticks(ranks, [RANK_NAMES[r - 1] for r in ranks], rotation=35, ha="right", rotation_mode="anchor")
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
+    ax.grid(axis="x", visible=False)
+    _style_ticks(ax, p_frame, 16)
+
+
+def _bar_labels(ax, x, vals, ymax, p_lab, color=None) -> None:
+    for xi, v in zip(x, vals):
+        if v >= 0.5 and p_lab > 0:
+            ax.text(xi, v + ymax * 0.012, f"{v:.0f}%" if v >= 1 else "<1%", ha="center", va="bottom",
+                    color=color or T.TEXT, fontsize=T.px_to_pt(17), fontweight="bold", alpha=p_lab,
+                    path_effects=T.STROKE, zorder=5)
+
+
+TRULY_NEW_COLOR, TRIED_COLOR = "#ffd073", "#c084fc"
+
+
+def _k(n: float) -> str:
+    """12345 -> '12.3k', 980 -> '980'."""
+    return f"{n / 1000:.1f}k".replace(".0k", "k") if n >= 1000 else f"{int(n)}"
+
+
+def _legend(ax, p_frame: float, size: float = 17) -> None:
+    leg = ax.legend(loc="upper right", frameon=False, fontsize=T.px_to_pt(size), labelcolor=T.TEXT)
+    for h in leg.legend_handles:
+        h.set_alpha(p_frame)
+    for t_ in leg.get_texts():
+        t_.set_alpha(p_frame)
+
+
+def render_new_players(d: dict, progress: float = 1.0, highlight=None):
+    """Where players with no old-season rank placed, rank by rank: the truly new (no old-season ranked match at
+    all) and those who played some old-season ranked but never finished its placements, side by side, each as a
+    share of its own group so their shapes compare directly."""
+    new = d["new"]
+    nm = d["meta"].get("new_players", {})
+    _, _, top = _rank_shares(d)
+    by = new.pivot_table(index="r2", columns="tried_s1", values="players", aggfunc="sum", fill_value=0)
+    by = by.reindex(index=range(1, top + 1), columns=[0, 1], fill_value=0)
+    n_new, n_tried = int(by[0].sum()), int(by[1].sum())
+    placed = n_new + n_tried
+    p_new = by[0] / max(n_new, 1) * 100
+    p_tried = by[1] / max(n_tried, 1) * 100
+    truly = 100 * n_new / placed
+
+    def med(rows):
+        return badge_name(_badge_of_step(int(_weighted_median(rows["s2_step"], rows["players"])))) if len(rows) else "-"
+    med_new, med_tried = med(new[new["tried_s1"] == 0]), med(new[new["tried_s1"] == 1])
+    cap = SEASONS[NEW]["placement_cap"] // 10
+
+    p_frame, p_bars, p_lab = _phases(progress)
+    fig, ax = T.new_card()
+    T.draw_header(fig, f"WHERE NEW PLAYERS PLACED IN {SEASONS[NEW]['name'].upper()}",
+                  f"{truly:.0f}% never played {SEASONS[OLD]['name']} ranked (median {med_new})  ·  "
+                  f"the rest tried it (median {med_tried})", alpha=p_frame)
+    T.draw_footer(fig, T.ChartMeta(SEASONS[NEW]["name"], None, date_range=f"{placed:,} new players placed  ·  "
+                                   f"data to {nm.get('exported', d['meta']['exported'])}"), alpha=p_frame)
+    extra = f"  ·  {nm['in_placements']:,} with no rank yet" if nm.get("in_placements") else ""
+    _note(fig, f"new = no {SEASONS[OLD]['name']} rank  ·  each colour = share of its own group, first rank after "
+          f"placements{extra}", p_frame)
+    x = np.array(p_new.index, float)
+    w = 0.38
+    ax.bar(x - w / 2, p_new.to_numpy() * p_bars, w, color=TRULY_NEW_COLOR, zorder=3,
+           label=f"never played {SEASONS[OLD]['name']} ranked ({n_new:,})")
+    ax.bar(x + w / 2, p_tried.to_numpy() * p_bars, w, color=TRIED_COLOR, zorder=3,
+           label=f"tried {SEASONS[OLD]['name']} ranked, no rank ({n_tried:,})")
+    ymax = max(p_new.max(), p_tried.max()) * 1.18
+    ax.set_ylim(0, ymax)
+    if cap <= top:
+        ax.axvline(cap + 0.5, color=DOWN_COLOR, lw=1.8, ls=(0, (5, 4)), alpha=p_frame, zorder=2)
+        ax.text(cap + 0.45, ymax * 0.80, f"highest placement:\n{badge_name(SEASONS[NEW]['placement_cap'])}",
+                ha="right", va="top", color=DOWN_COLOR, fontsize=T.px_to_pt(15), fontweight="bold", alpha=p_frame)
+    if p_lab > 0:
+        for xi, a, b in zip(x, p_new.to_numpy(), p_tried.to_numpy()):
+            for off, v, c in ((-w / 2, a, TRULY_NEW_COLOR), (w / 2, b, TRIED_COLOR)):
+                if v >= 0.5:
+                    ax.text(xi + off, v + ymax * 0.01, f"{v:.0f}" if v >= 1 else "<1", ha="center", va="bottom",
+                            color=c, fontsize=T.px_to_pt(14), fontweight="bold", alpha=p_lab,
+                            path_effects=T.STROKE, zorder=5)
+    ax.set_ylabel("share of each group (%)", color=T.TEXT_MUTED, fontsize=T.px_to_pt(17), alpha=p_frame)
+    _legend(ax, p_frame)
+    _rank_axis(ax, np.array(p_new.index), p_frame)
+    return fig
+
+
+NEW_COLOR, RETURNING_COLOR = "#ffd073", "#4f8fe0"
+
+
+def render_ladder(d: dict, progress: float = 1.0, highlight=None):
+    """The whole new-season ladder: returning players (their first new-season rank) and new players (their
+    placement) stacked in every rank, as shares of everyone."""
+    new_n, ret_n, top = _rank_shares(d)
+    total = new_n.sum() + ret_n.sum()
+    p_new, p_ret = new_n / total * 100, ret_n / total * 100
+    both = p_new + p_ret
+    nm = d["meta"].get("new_players", {})
+    p_frame, p_bars, p_lab = _phases(progress)
+    fig, ax = T.new_card()
+    new_share = 100 * new_n.sum() / total
+    busiest = int(both.idxmax())
+    T.draw_header(fig, f"WHAT THE {SEASONS[NEW]['name'].upper()} LADDER LOOKS LIKE",
+                  f"{new_share:.0f}% of ranked players are new  ·  {both[busiest]:.0f}% of everyone is in "
+                  f"{RANK_NAMES[busiest - 1]}", alpha=p_frame)
+    T.draw_footer(fig, T.ChartMeta(SEASONS[NEW]["name"], None, date_range=f"{int(total):,} players"),
+                  alpha=p_frame)
+    _note(fig, f"returning = first {SEASONS[NEW]['name']} rank after the soft reset (data to "
+          f"{d['meta']['exported']})  ·  new = placement (data to {nm.get('exported', '?')})", p_frame)
+    x = np.array(both.index)
+    ax.bar(x, p_ret.to_numpy() * p_bars, 0.68, color=RETURNING_COLOR, zorder=3,
+           label=f"returning from {SEASONS[OLD]['name']} ({int(ret_n.sum()):,})")
+    ax.bar(x, p_new.to_numpy() * p_bars, 0.68, bottom=p_ret.to_numpy() * p_bars, color=NEW_COLOR, zorder=3,
+           label=f"new to ranked ({int(new_n.sum()):,})")
+    ymax = both.max() * 1.2
+    ax.set_ylim(0, ymax)
+    if p_lab > 0:
+        n_all = (new_n + ret_n).to_numpy()
+        for xi, r, nw, tot, n in zip(x, p_ret.to_numpy(), p_new.to_numpy(), both.to_numpy(), n_all):
+            # each part's own share inside it (when there's room), the total and its player count on top
+            for v, y0 in ((r, 0.0), (nw, r)):
+                if v >= ymax * 0.045:
+                    ax.text(xi, y0 + v / 2, f"{v:.0f}%" if v >= 1 else "<1%", ha="center", va="center",
+                            color=T.BG, fontsize=T.px_to_pt(15), fontweight="bold", alpha=p_lab, zorder=5)
+            if tot >= 0.3:
+                ax.text(xi, tot + ymax * 0.012, f"{tot:.0f}%\n{_k(n)}" if tot >= 1 else f"<1%\n{_k(n)}",
+                        ha="center", va="bottom", color=T.TEXT, fontsize=T.px_to_pt(15), fontweight="bold",
+                        alpha=p_lab, path_effects=T.STROKE, zorder=5, linespacing=1.05)
+    ax.set_ylabel("share of all ranked players", color=T.TEXT_MUTED, fontsize=T.px_to_pt(17), alpha=p_frame)
+    _legend(ax, p_frame, 18)
+    _rank_axis(ax, x, p_frame)
+    return fig
+
+
 def cards(data_dir: Path, **_) -> dict:
     data_dir = Path(data_dir)
     if not (data_dir / "season_reset_meta.json").exists():
@@ -417,6 +623,9 @@ def cards(data_dir: Path, **_) -> dict:
            "s2_rules": lambda progress=1.0, highlight=None: render_rules(d, progress),
            "s2_reset_by_rank": lambda progress=1.0, highlight=None: render_by_rank(d, progress),
            "s2_reset_flow": lambda progress=1.0, highlight=None: render_flow(d, progress)}
+    if "new" in d and len(d["new"]):
+        out["s2_new_players"] = lambda progress=1.0, highlight=None: render_new_players(d, progress)
+        out["s2_ladder"] = lambda progress=1.0, highlight=None: render_ladder(d, progress)
     for name, secs in BUILD_S.items():          # simple cards build faster than animate's 6 s default
         out[name].build_s = secs
     return out
@@ -435,11 +644,13 @@ def summary(data_dir: Path) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["export", "cards", "summary"])
+    ap.add_argument("command", choices=["export", "export-new", "cards", "summary"])
     ap.add_argument("dir", type=Path, nargs="?", default=T.ANALYSES_ROOT / "season_2_start")
     a = ap.parse_args()
     if a.command == "export":
         export(a.dir)
+    elif a.command == "export-new":
+        export_new(a.dir)
     elif a.command == "summary":
         print(summary(a.dir))
     else:

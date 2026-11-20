@@ -239,6 +239,8 @@ def main() -> int:
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--concat", type=Path, default=None,
                     help="also join the rendered clips, in order, into this one video file")
+    ap.add_argument("--keep-clips", action="store_true",
+                    help="with --concat: keep the separate clips too (default: only the joined video is kept)")
     ap.add_argument("--codec", choices=list(CODECS), default="hevc",
                     help="hevc (default, GPU, same as OBS), h264 (CPU) or prores (editing)")
     ap.add_argument("--out-dir", type=Path, default=None, help="default: <week_dir>/videos")
@@ -287,6 +289,12 @@ def main() -> int:
     used: dict[str, int] = {}
     rendered: list[Path] = []
     ext = CODECS[args.codec][0]
+    # --concat: the clips are only ingredients. They go to a hidden folder next to the video (same disk, not /tmp,
+    # which is RAM on many distros) and are deleted once the joined video is made. --keep-clips keeps them.
+    clip_dir = out_dir
+    if args.concat and not args.keep_clips:
+        import tempfile
+        clip_dir = Path(tempfile.mkdtemp(prefix=".clips_", dir=out_dir))
     with mp.get_context("fork").Pool(workers) as pool:
         for s in scenes:
             name = s.name or s.card
@@ -294,15 +302,19 @@ def main() -> int:
             if used[name] > 1:                      # same card twice in one scenes file
                 name = f"{name}_{used[name]}"
             t = time.time()
-            secs = render_scene(s, pool, out_dir / name, args.fps, args.codec)
-            rendered.append((out_dir / name).with_suffix(ext))
+            secs = render_scene(s, pool, clip_dir / name, args.fps, args.codec)
+            rendered.append((clip_dir / name).with_suffix(ext))
             print(f"{name}{ext}: {secs:.1f}s clip in {time.time() - t:.1f}s")
-    print(f"Clips in {out_dir}")
-    if args.concat:
-        target = args.concat if args.concat.suffix else args.concat.with_suffix(ext)
-        if target.parent == Path("."):                   # a bare name lands next to the clips
-            target = out_dir / target
-        concat(rendered, target)
+    if not args.concat:
+        print(f"Clips in {out_dir}")
+        return 0
+    target = args.concat if args.concat.suffix else args.concat.with_suffix(ext)
+    if target.parent == Path("."):                       # a bare name lands in videos/
+        target = out_dir / target
+    concat(rendered, target)                             # raises (clips kept) if the join fails
+    if clip_dir != out_dir:
+        import shutil
+        shutil.rmtree(clip_dir, ignore_errors=True)
     return 0
 
 

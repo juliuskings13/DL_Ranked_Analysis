@@ -1031,7 +1031,7 @@ TALL_SAFE_BOTTOM, TALL_SAFE_RIGHT = 170, 140     # px kept clear for the Shorts 
 # (start s, end s) of each section; the header and tiles keep the square card's timing (first 3.2 s)
 TALL_TIMES = {"trend": (3.2, 6.1), "rank": (6.1, 8.8), "length": (8.8, 11.0), "mvp": (10.6, 13.0),
               "per_min": (12.5, 17.5), "lanes": (17.0, 20.0)}
-TALL_BUILD_S = 20.5
+TALL_BUILD_S = 14
 
 
 def _white_xticks(ax, px: float) -> None:
