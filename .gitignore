@@ -23,6 +23,7 @@ logs/
 !sample_data/*.csv
 patches/
 season_*/
+meta_cache/
 
 # --- game art (Valve's assets; re-download with scripts/ingest_hero_icons.py) ---
 assets/
