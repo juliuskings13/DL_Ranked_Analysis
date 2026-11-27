@@ -212,6 +212,67 @@ ALTER TABLE items ADD COLUMN IF NOT EXISTS shopable   BOOLEAN;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS hero_id    INT;
 ALTER TABLE items ADD COLUMN IF NOT EXISTS image_url  TEXT;
 
+-- Build paths: item_id is built from component_id (the API's component_items, e.g. Colossus <- Extra Health).
+-- One row per direct step. Replaced whole by ingest_game_assets.py on every run: patches change them.
+CREATE TABLE IF NOT EXISTS item_components (
+    item_id       BIGINT NOT NULL,
+    component_id  BIGINT NOT NULL,
+    PRIMARY KEY (item_id, component_id)
+);
+CREATE INDEX IF NOT EXISTS item_components_component_idx ON item_components (component_id);
+-- Every item each item can become, directly (steps = 1) or through others (steps = 2, 3):
+--   Extra Spirit -> Improved Spirit (1), Extra Spirit -> Boundless Spirit (2), Extra Health -> Colossus (1)
+CREATE OR REPLACE VIEW item_upgrade_paths AS
+WITH RECURSIVE up (from_id, to_id, steps) AS (
+    SELECT component_id, item_id, 1 FROM item_components
+    UNION ALL
+    SELECT up.from_id, c.item_id, up.steps + 1
+    FROM up JOIN item_components c ON c.component_id = up.to_id
+    WHERE up.steps < 6
+)
+SELECT up.from_id, f.name AS from_name, f.tier AS from_tier,
+       up.to_id,   t.name AS to_name,   t.tier AS to_tier, up.steps
+FROM up
+JOIN items f ON f.id = up.from_id
+JOIN items t ON t.id = up.to_id;
+
+-- Full item data with history (ingest_item_details.py): one row per version of an item, a new one whenever
+-- the game data changes. valid_to = when the next version was first seen; NULL = the current version.
+CREATE TABLE IF NOT EXISTS item_versions (
+    item_id      BIGINT      NOT NULL,
+    valid_from   TIMESTAMPTZ NOT NULL,          -- the first ingest that saw this version
+    valid_to     TIMESTAMPTZ,
+    data_hash    CHAR(16)    NOT NULL,          -- game data only: image links and timestamps don't count
+    class_name   VARCHAR(100),
+    name         VARCHAR(100),
+    type         VARCHAR(20),                   -- upgrade / ability / weapon
+    slot_type    VARCHAR(20),
+    tier         SMALLINT,
+    cost         INT,
+    shopable     BOOLEAN,
+    activation   VARCHAR(30),
+    description  TEXT,                          -- the wording, plain text
+    data         JSONB       NOT NULL,          -- the API's whole record
+    PRIMARY KEY (item_id, valid_from)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS item_versions_current_idx ON item_versions (item_id) WHERE valid_to IS NULL;
+-- the stats of each version: everything its tooltip shows, plus other labelled non-zero stats
+CREATE TABLE IF NOT EXISTS item_stats (
+    item_id     BIGINT      NOT NULL,
+    valid_from  TIMESTAMPTZ NOT NULL,
+    property    VARCHAR(80) NOT NULL,           -- the API's name, e.g. BonusHealth
+    label       VARCHAR(100),                   -- the card's name for it, e.g. Bonus Health
+    value_text  VARCHAR(50),                    -- as the API writes it: 210, 14m, 6.25
+    value       DOUBLE PRECISION,               -- the number in it
+    unit        VARCHAR(20),                    -- %, s, m ...
+    section     VARCHAR(20),                    -- innate / passive / active
+    shown       BOOLEAN,                        -- listed on the card
+    PRIMARY KEY (item_id, valid_from, property),
+    FOREIGN KEY (item_id, valid_from) REFERENCES item_versions (item_id, valid_from)
+);
+CREATE OR REPLACE VIEW item_current AS
+SELECT * FROM item_versions WHERE valid_to IS NULL;
+
 -- each hero's four abilities in slot order (1-3 regular, 4 = ultimate), from the assets API
 -- Objectives (ingest --with-objectives / --objectives-only)
 ALTER TABLE match_player ADD COLUMN IF NOT EXISTS boss_damage INT;      -- end-of-match objective damage
